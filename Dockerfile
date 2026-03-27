@@ -19,7 +19,7 @@ COPY --from=asdf /root/.asdf/installs /root/.asdf/installs
 COPY --from=asdf /root/.asdf/plugins /root/.asdf/plugins
 COPY --from=asdf /root/.asdf/shims /root/.asdf/shims
 COPY --from=asdf /root/go/bin/asdf /usr/local/bin/
-COPY --from=asdf /root/.asdf/.tool-versions /root/.tool-versions
+COPY --from=asdf /root/.asdf/.tool-versions /.tool-versions
 COPY --from=claude /root/.claude /root/.claude
 COPY --from=claude /root/.local/bin/claude /usr/local/bin/
 COPY --from=registry.k8s.io/kubectl:v1.35.0 /bin/kubectl /usr/local/bin/
@@ -28,7 +28,6 @@ COPY --from=registry.k8s.io/etcd:3.6.6-0 /usr/local/bin/etcdctl /usr/local/bin/
 FROM scratch AS smoke-test
 COPY --from=combined / /
 ENV ASDF_DATA_DIR="/root/.asdf"
-ENV ASDF_DEFAULT_TOOL_VERSIONS_FILENAME="/root/.tool-versions"
 ENV PATH="/root/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SHELL [ "/bin/zsh", "-c" ]
 
@@ -41,7 +40,6 @@ FROM scratch AS final
 # single layer output
 COPY --from=combined / /
 ENV ASDF_DATA_DIR="/root/.asdf"
-ENV ASDF_DEFAULT_TOOL_VERSIONS_FILENAME="/root/.tool-versions"
 ENV PATH="/root/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 CMD ["/bin/zsh"]
 SHELL [ "/bin/zsh", "-c" ]
