@@ -28,6 +28,7 @@ COPY --from=registry.k8s.io/etcd:3.6.6-0 /usr/local/bin/etcdctl /usr/local/bin/
 FROM scratch AS smoke-test
 COPY --from=combined / /
 ENV ASDF_DATA_DIR="/root/.asdf"
+ENV ASDF_DEFAULT_TOOL_VERSIONS_FILENAME="/root/.tool-versions"
 ENV PATH="/root/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SHELL [ "/bin/zsh", "-c" ]
 
@@ -40,6 +41,7 @@ FROM scratch AS final
 # single layer output
 COPY --from=combined / /
 ENV ASDF_DATA_DIR="/root/.asdf"
+ENV ASDF_DEFAULT_TOOL_VERSIONS_FILENAME="/root/.tool-versions"
 ENV PATH="/root/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 CMD ["/bin/zsh"]
 SHELL [ "/bin/zsh", "-c" ]
