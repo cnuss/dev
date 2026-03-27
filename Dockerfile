@@ -23,17 +23,18 @@ FROM scratch AS smoke-test
 COPY --from=combined / /
 USER dev
 WORKDIR /home/dev
-ENV PATH="/home/dev/.asdf/shims:${PATH}"
+ENV PATH="/home/dev/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+CMD ["/bin/zsh"]
 
-RUN k9s --help
-RUN kubectl version --client
-RUN etcdctl version
-RUN fzf --version
-RUN kubectx --help
+COPY .apt/smoke.sh /tmp/apt-smoke.sh
+COPY .asdf/smoke.sh /tmp/asdf-smoke.sh
+RUN /tmp/apt-smoke.sh
+RUN /tmp/asdf-smoke.sh
 
 FROM scratch AS final
 # single layer output
 COPY --from=combined / /
 USER dev
 WORKDIR /home/dev
-ENV PATH="/home/dev/.asdf/shims:${PATH}"
+ENV PATH="/home/dev/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+CMD ["/bin/zsh"]
