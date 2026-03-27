@@ -19,7 +19,7 @@ COPY --from=asdf /root/.asdf/installs /root/.asdf/installs
 COPY --from=asdf /root/.asdf/plugins /root/.asdf/plugins
 COPY --from=asdf /root/.asdf/shims /root/.asdf/shims
 COPY --from=asdf /root/go/bin/asdf /usr/local/bin/
-COPY --from=asdf /root/.asdf/.tool-versions /.tool-versions
+COPY --from=asdf /root/.asdf/.tool-versions /root/.tool-versions
 COPY --from=claude /root/.claude /root/.claude
 COPY --from=claude /root/.local/bin/claude /usr/local/bin/
 COPY --from=registry.k8s.io/kubectl:v1.35.0 /bin/kubectl /usr/local/bin/
@@ -31,10 +31,11 @@ ENV ASDF_DATA_DIR="/root/.asdf"
 ENV PATH="/root/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SHELL [ "/bin/zsh", "-c" ]
 
-COPY . .
-RUN .ubuntu/smoke.sh
-RUN .claude/smoke.sh
-RUN .asdf/smoke.sh
+COPY . /tmp/smoke
+WORKDIR /somewhere/random
+RUN /tmp/smoke/.ubuntu/smoke.sh
+RUN /tmp/smoke/.claude/smoke.sh
+RUN /tmp/smoke/.asdf/smoke.sh
 
 FROM scratch AS final
 # single layer output

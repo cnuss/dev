@@ -12,3 +12,8 @@ asdf plugin add asdf-plugin-manager https://github.com/asdf-community/asdf-plugi
 asdf install asdf-plugin-manager 1.5.0
 asdf-plugin-manager add-all
 asdf install
+
+# Set all installed versions globally
+while IFS=' ' read -r tool version; do
+  asdf set -u "$tool" "$version"
+done < "$SCRIPT_DIR/.tool-versions"
