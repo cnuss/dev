@@ -10,6 +10,7 @@ iputils-ping
 less
 net-tools
 netcat-openbsd
+sudo
 tar
 telnet
 tftp-hpa
