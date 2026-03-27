@@ -68,6 +68,8 @@ jobs:
     needs: build-and-push
     if: github.ref == 'refs/heads/latest'
     runs-on: ubuntu-latest
+    permissions:
+      packages: read
     container:
       image: ghcr.io/${{ github.repository }}:latest
       credentials:
@@ -77,8 +79,11 @@ jobs:
       - name: Checkout smoke scripts
         uses: actions/checkout@v4
 
-      - name: APT smoke test
-        run: .apt/smoke.sh
+      - name: Ubuntu smoke test
+        run: .ubuntu/smoke.sh
 
       - name: ASDF smoke test
         run: .asdf/smoke.sh
+
+      - name: Claude smoke test
+        run: .claude/smoke.sh

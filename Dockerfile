@@ -1,40 +1,45 @@
 FROM ubuntu:latest AS base
 
-COPY .apt .apt
-RUN .apt/install.sh
+COPY .ubuntu .ubuntu
+RUN .ubuntu/install.sh
 
 FROM base AS asdf
 RUN apt-get update && apt-get install -y golang make && rm -rf /var/lib/apt/lists/*
-USER dev
-WORKDIR /home/dev
-COPY --chown=dev:dev .asdf .asdf
+WORKDIR /root
+COPY .asdf .asdf
 RUN .asdf/install.sh
 
+FROM base AS claude
+WORKDIR /root
+COPY .claude .claude
+RUN .claude/install.sh
+
 FROM base AS combined
-COPY --from=asdf --chown=dev:dev /home/dev/.asdf/installs /home/dev/.asdf/installs
-COPY --from=asdf --chown=dev:dev /home/dev/.asdf/plugins /home/dev/.asdf/plugins
-COPY --from=asdf --chown=dev:dev /home/dev/.asdf/shims /home/dev/.asdf/shims
-COPY --from=asdf /home/dev/go/bin/asdf /usr/local/bin/
-COPY --from=asdf --chown=dev:dev /home/dev/.asdf/.tool-versions /home/dev/.tool-versions
+COPY --from=asdf /root/.asdf/installs /root/.asdf/installs
+COPY --from=asdf /root/.asdf/plugins /root/.asdf/plugins
+COPY --from=asdf /root/.asdf/shims /root/.asdf/shims
+COPY --from=asdf /root/go/bin/asdf /usr/local/bin/
+COPY --from=asdf /root/.asdf/.tool-versions /root/.tool-versions
+COPY --from=claude /root/.claude /root/.claude
+COPY --from=claude /root/.local/bin/claude /usr/local/bin/
 COPY --from=registry.k8s.io/kubectl:v1.35.0 /bin/kubectl /usr/local/bin/
 COPY --from=registry.k8s.io/etcd:3.6.6-0 /usr/local/bin/etcdctl /usr/local/bin/
 
 FROM scratch AS smoke-test
 COPY --from=combined / /
-USER dev
-WORKDIR /home/dev
-ENV PATH="/home/dev/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-CMD ["/bin/zsh"]
+ENV ASDF_DATA_DIR="/root/.asdf"
+ENV PATH="/root/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+SHELL [ "/bin/zsh", "-c" ]
 
-COPY .apt/smoke.sh /tmp/apt-smoke.sh
-COPY .asdf/smoke.sh /tmp/asdf-smoke.sh
-RUN /tmp/apt-smoke.sh
-RUN /tmp/asdf-smoke.sh
+COPY . .
+RUN .ubuntu/smoke.sh
+RUN .claude/smoke.sh
+RUN .asdf/smoke.sh
 
 FROM scratch AS final
 # single layer output
 COPY --from=combined / /
-USER dev
-WORKDIR /home/dev
-ENV PATH="/home/dev/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ENV ASDF_DATA_DIR="/root/.asdf"
+ENV PATH="/root/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 CMD ["/bin/zsh"]
+SHELL [ "/bin/zsh", "-c" ]
