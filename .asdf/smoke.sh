@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-# ensure asdf can find tool versions regardless of HOME
-[ -f /.tool-versions ] && cp /.tool-versions "$HOME/.tool-versions" 2>/dev/null || true
+source /etc/profile.d/asdf-tool-versions.sh
 
 kubectl version --client
 etcdctl version
@@ -11,7 +10,10 @@ fzf --version
 kubectx --help
 jq --version
 yq --version
+rg --version
 
 # verify asdf can install new tools
-asdf plugin add ripgrep
-asdf install ripgrep latest
+asdf plugin add traefik
+asdf install traefik latest
+asdf set traefik latest
+traefik version
