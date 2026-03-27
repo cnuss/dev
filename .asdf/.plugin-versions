@@ -1,0 +1,3 @@
+fzf https://github.com/kompiro/asdf-fzf.git master
+k9s https://github.com/looztra/asdf-k9s.git main
+kubectx https://github.com/virtualstaticvoid/asdf-kubectx.git master
