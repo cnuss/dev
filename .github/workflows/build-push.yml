@@ -40,11 +40,6 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=tag
-          labels: |
-            org.opencontainers.image.created={{.Created}}
-            org.opencontainers.image.url={{.URL}}
-            org.opencontainers.image.revision={{.Revision}}
-            org.opencontainers.image.source={{.Source}}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
