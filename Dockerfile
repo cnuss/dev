@@ -20,11 +20,11 @@ RUN asdf install asdf-plugin-manager 1.5.0
 RUN asdf-plugin-manager add-all && asdf install
 
 FROM base AS combined
-COPY --from=asdf /home/dev/.asdf/installs /home/dev/.asdf/installs
-COPY --from=asdf /home/dev/.asdf/plugins /home/dev/.asdf/plugins
-COPY --from=asdf /home/dev/.asdf/shims /home/dev/.asdf/shims
+COPY --from=asdf --chown=dev:dev /home/dev/.asdf/installs /home/dev/.asdf/installs
+COPY --from=asdf --chown=dev:dev /home/dev/.asdf/plugins /home/dev/.asdf/plugins
+COPY --from=asdf --chown=dev:dev /home/dev/.asdf/shims /home/dev/.asdf/shims
 COPY --from=asdf /home/dev/go/bin/asdf /usr/local/bin/
-COPY --from=asdf /home/dev/.tool-versions /home/dev/.tool-versions
+COPY --from=asdf --chown=dev:dev /home/dev/.tool-versions /home/dev/.tool-versions
 COPY --from=registry.k8s.io/kubectl:v1.35.0 /bin/kubectl /usr/local/bin/
 COPY --from=registry.k8s.io/etcd:3.6.6-0 /usr/local/bin/etcdctl /usr/local/bin/
 
