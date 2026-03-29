@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
-k9s version -s
+etcdctl version
 fzf --version
-kubectx --version
 jq --version
-yq --version
+k9s version -s
+kubectl version --client
+kubectx --version
 rg --version
+yq --version

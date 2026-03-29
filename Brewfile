@@ -1,6 +1,8 @@
+brew "etcd"
 brew "fzf"
 brew "jq"
 brew "k9s"
 brew "kubectx"
+brew "kubernetes-cli"
 brew "ripgrep"
 brew "yq"

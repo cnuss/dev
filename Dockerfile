@@ -35,7 +35,8 @@ RUN .claude/install.sh
 
 FROM ${BASE_IMAGE} AS combined
 COPY --from=bins / /
-COPY --from=claude / /
+COPY --from=claude /root/.local/ /root/.local/
+COPY --from=claude /root/.claude/ /root/.claude/
 COPY --from=homebrew /usr/local/bin/ /usr/local/bin/
 COPY --from=homebrew /usr/local/lib/ /usr/local/lib/
 COPY --from=homebrew /usr/local/share/ /usr/local/share/
