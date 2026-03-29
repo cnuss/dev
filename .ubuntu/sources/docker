@@ -1,0 +1,3 @@
+gpg=https://download.docker.com/linux/ubuntu/gpg
+uri=https://download.docker.com/linux/ubuntu
+components=stable

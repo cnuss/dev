@@ -12,3 +12,4 @@ ping -c 1 127.0.0.1
 nc -h
 ip -V
 ifconfig --version
+docker --version

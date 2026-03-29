@@ -1,8 +1,7 @@
 busybox
 bzip2
-ca-certificates
-curl
 dnsutils
+docker-ce-cli
 git
 gzip
 hostname
