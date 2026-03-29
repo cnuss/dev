@@ -19,7 +19,7 @@ RUN /home/linuxbrew/.linuxbrew/bin/brew bundle --file="./Brewfile" && \
     ldd /usr/local/bin/* 2>/dev/null | grep -o '/home/linuxbrew[^ ]*\.so[^ ]*' | sort -u | while read lib; do sudo cp "$(readlink -f "$lib")" /usr/local/lib/"$(basename "$lib")"; done && \
     sudo ldconfig
 RUN sudo mkdir -p /usr/local/share/zsh/site-functions && \
-    sudo cp -r /home/linuxbrew/.linuxbrew/share/zsh/site-functions/* /usr/local/share/zsh/site-functions/ && \
+    sudo cp -rL /home/linuxbrew/.linuxbrew/share/zsh/site-functions/* /usr/local/share/zsh/site-functions/ && \
     sudo rm -f /usr/local/share/zsh/site-functions/_brew
 
 FROM ${BASE_IMAGE} AS bins
@@ -35,7 +35,7 @@ RUN .claude/install.sh
 
 FROM ${BASE_IMAGE} AS combined
 COPY --from=bins / /
-COPY --from=claude /root/.local/ /root/.local/
+COPY --from=claude /usr/local/bin/claude /usr/local/bin/claude
 COPY --from=claude /root/.claude/ /root/.claude/
 COPY --from=homebrew /usr/local/bin/ /usr/local/bin/
 COPY --from=homebrew /usr/local/lib/ /usr/local/lib/
@@ -45,7 +45,7 @@ RUN ldconfig
 
 FROM scratch AS smoke-test
 # single layer output simulation
-ENV PATH="/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     LD_LIBRARY_PATH="/usr/local/lib"
 COPY --from=combined / /
 SHELL [ "/bin/zsh", "-c" ]
@@ -57,7 +57,7 @@ RUN .homebrew/smoke.sh
 
 FROM scratch AS final
 # single layer output
-ENV PATH="/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     LD_LIBRARY_PATH="/usr/local/lib"
 COPY --from=combined / /
 SHELL [ "/bin/zsh", "-c" ]
