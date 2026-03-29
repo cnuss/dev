@@ -1,0 +1,6 @@
+brew "fzf"
+brew "jq"
+brew "k9s"
+brew "kubectx"
+brew "ripgrep"
+brew "yq"

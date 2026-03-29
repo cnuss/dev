@@ -1,6 +1,0 @@
-fzf https://github.com/kompiro/asdf-fzf.git master
-jq https://github.com/lsanwick/asdf-jq.git master
-k9s https://github.com/looztra/asdf-k9s.git main
-kubectx https://github.com/virtualstaticvoid/asdf-kubectx.git master
-ripgrep https://gitlab.com/wt0f/asdf-ripgrep.git master
-yq https://github.com/sudermanjr/asdf-yq.git master

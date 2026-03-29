@@ -1,51 +1,45 @@
-FROM ubuntu:latest AS base
+ARG BASE_IMAGE=ubuntu:latest
+FROM ${BASE_IMAGE} AS homebrew
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    git \
+    build-essential \
+    sudo \
+    && rm -rf /var/lib/apt/lists/* && \
+    echo "ubuntu ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-COPY .ubuntu .ubuntu
-RUN .ubuntu/install.sh
+USER ubuntu
+COPY .homebrew .homebrew
+RUN .homebrew/install.sh
 
-FROM base AS asdf
-RUN apt-get update && apt-get install -y golang make && rm -rf /var/lib/apt/lists/*
-WORKDIR /root
-COPY .asdf .asdf
-RUN .asdf/install.sh
+COPY Brewfile .
+RUN /home/linuxbrew/.linuxbrew/bin/brew bundle --file="./Brewfile" && \
+    for bin in /home/linuxbrew/.linuxbrew/bin/*; do [ "$(basename "$bin")" = "brew" ] && continue; sudo cp "$(readlink -f "$bin")" /usr/local/bin/"$(basename "$bin")"; done
 
-FROM base AS claude
-WORKDIR /root
-COPY .claude .claude
-RUN .claude/install.sh
+FROM ${BASE_IMAGE} AS bins
 
-FROM base AS combined
-COPY --from=asdf /root/.asdf/installs /.asdf/installs
-COPY --from=asdf /root/.asdf/plugins /.asdf/plugins
-COPY --from=asdf /root/.asdf/shims /.asdf/shims
-COPY --from=asdf /root/go/bin/asdf /usr/local/bin/
-COPY --from=asdf /root/.tool-versions /.tool-versions
-COPY --from=claude /root/.claude /root/.claude
-COPY --from=claude /root/.local/bin/claude /usr/local/bin/
-COPY --from=registry.k8s.io/kubectl:v1.35.0 /bin/kubectl /usr/local/bin/
-COPY --from=registry.k8s.io/etcd:3.6.6-0 /usr/local/bin/etcdctl /usr/local/bin/
+COPY .apt .apt
+RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN .apt/install.sh
+
+FROM ${BASE_IMAGE} AS combined
+COPY --from=bins / /
+COPY --from=homebrew /usr/local/bin/ /usr/local/bin/
 
 FROM scratch AS smoke-test
+# single layer output simulation
+ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 COPY --from=combined / /
-ENV ASDF_DIR="/.asdf"
-ENV ASDF_DATA_DIR="/.asdf"
-ENV ASDF_CONFIG_FILE="/.asdfrc"
-ENV PATH="/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SHELL [ "/bin/zsh", "-c" ]
 
-COPY . /tmp/smoke
-WORKDIR /somewhere/random
-ENV HOME="/somewhere/random"
-RUN /tmp/smoke/.ubuntu/smoke.sh
-RUN /tmp/smoke/.claude/smoke.sh
-RUN /tmp/smoke/.asdf/smoke.sh
+COPY . .
+RUN .apt/smoke.sh
+RUN .homebrew/smoke.sh
 
 FROM scratch AS final
 # single layer output
+ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 COPY --from=combined / /
-ENV ASDF_DIR="/.asdf"
-ENV ASDF_DATA_DIR="/.asdf"
-ENV ASDF_CONFIG_FILE="/.asdfrc"
-ENV PATH="/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-CMD ["/bin/zsh"]
 SHELL [ "/bin/zsh", "-c" ]
+CMD ["/bin/zsh"]

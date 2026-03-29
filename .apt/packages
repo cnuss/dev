@@ -1,5 +1,7 @@
 busybox
 bzip2
+curl
+ca-certificates
 dnsutils
 docker-ce-cli
 git
