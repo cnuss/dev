@@ -87,3 +87,42 @@ jobs:
 
       - name: Claude smoke test
         run: .claude/smoke.sh
+
+  publish-feature:
+    needs: smoke-test
+    if: github.ref == 'refs/heads/latest'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up ORAS
+        uses: oras-project/setup-oras@v1
+
+      - name: Login to GitHub Container Registry
+        run: echo ${{ secrets.GITHUB_TOKEN }} | oras login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Login to DockerHub
+        run: echo ${{ secrets.DOCKERHUB_TOKEN }} | oras login registry-1.docker.io -u ${{ github.repository_owner }} --password-stdin
+
+      - name: Package Feature tarball
+        run: tar czf devcontainer-feature-dev.tgz devcontainer-feature.json install.sh .ubuntu/ .asdf/ .claude/
+
+      - name: Create OCI config
+        run: echo '{}' > config.json
+
+      - name: Publish Feature to GHCR
+        run: >-
+          oras push ghcr.io/${{ github.repository }}:1
+          --config config.json:application/vnd.devcontainers
+          devcontainer-feature-dev.tgz:application/vnd.devcontainers.layer.v1+tar
+
+      - name: Publish Feature to DockerHub
+        run: >-
+          oras push registry-1.docker.io/${{ github.repository }}:1
+          --config config.json:application/vnd.devcontainers
+          devcontainer-feature-dev.tgz:application/vnd.devcontainers.layer.v1+tar

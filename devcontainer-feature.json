@@ -1,0 +1,12 @@
+{
+  "id": "dev",
+  "version": "1.0.0",
+  "name": "Dev Environment",
+  "description": "Ubuntu dev tooling: asdf (fzf, jq, k9s, kubectx, ripgrep, yq), kubectl, etcdctl, Claude CLI",
+  "containerEnv": {
+    "ASDF_DIR": "/.asdf",
+    "ASDF_DATA_DIR": "/.asdf",
+    "ASDF_CONFIG_FILE": "/.asdfrc",
+    "PATH": "/.asdf/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  }
+}
