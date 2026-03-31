@@ -4,6 +4,7 @@
 import json
 import os
 import sys
+from datetime import datetime, timezone
 
 
 def main():
@@ -36,6 +37,7 @@ def main():
             "correlator": f"sbom-{os.environ.get('GITHUB_JOB', 'unknown')}",
             "id": os.environ["GITHUB_RUN_ID"],
         },
+        "scanned": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "detector": {
             "name": "cnuss/dev-sbom",
             "version": "1.0.0",
