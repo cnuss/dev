@@ -14,6 +14,8 @@ concurrency:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     permissions:
       contents: read
       packages: write
@@ -71,7 +73,7 @@ jobs:
 
       - name: Attest GHCR image
         if: github.ref == 'refs/heads/latest'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.build.outputs.digest }}
@@ -79,7 +81,7 @@ jobs:
 
       - name: Attest Docker Hub image
         if: github.ref == 'refs/heads/latest'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: index.docker.io/${{ github.repository }}
           subject-digest: ${{ steps.build.outputs.digest }}
@@ -92,6 +94,8 @@ jobs:
     permissions:
       contents: write
       packages: read
+      attestations: write
+      id-token: write
     steps:
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v4
@@ -109,9 +113,25 @@ jobs:
           upload-artifact: true
           dependency-snapshot: false
 
+      - name: Attest SBOM to GHCR image
+        uses: actions/attest-sbom@v4
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ needs.build-and-push.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+
+      - name: Attest SBOM to Docker Hub image
+        uses: actions/attest-sbom@v4
+        with:
+          subject-name: index.docker.io/${{ github.repository }}
+          subject-digest: ${{ needs.build-and-push.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+
       - name: Submit SBOM to dependency graph
         uses: anchore/sbom-action/publish-sbom@v0
-        continue-on-error: true
+        continue-on-error: false
         with:
           sbom-artifact-match: sbom.spdx.json
 
