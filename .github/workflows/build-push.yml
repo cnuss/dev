@@ -100,14 +100,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate SBOM and submit to dependency graph
+      - name: Generate SBOM
         uses: anchore/sbom-action@v0
         with:
           image: ghcr.io/${{ github.repository }}:latest
           format: spdx-json
           output-file: sbom.spdx.json
           upload-artifact: true
-          dependency-snapshot: true
+          dependency-snapshot: false
+
+      - name: Submit SBOM to dependency graph
+        uses: anchore/sbom-action/publish-sbom@v0
+        continue-on-error: true
+        with:
+          sbom-artifact-match: sbom.spdx.json
 
   smoke-test:
     needs: build-and-push
