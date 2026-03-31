@@ -93,7 +93,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      packages: read
+      packages: write
       attestations: write
       id-token: write
     steps:
@@ -129,19 +129,21 @@ jobs:
           path: sbom.spdx.json
 
       - name: Attest SBOM to GHCR image
-        uses: actions/attest-sbom@v4
+        uses: actions/attest@v2
         with:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ needs.build-and-push.outputs.digest }}
-          sbom-path: sbom.spdx.json
+          predicate-type: https://spdx.dev/Document
+          predicate-path: sbom.spdx.json
           push-to-registry: true
 
       - name: Attest SBOM to Docker Hub image
-        uses: actions/attest-sbom@v4
+        uses: actions/attest@v2
         with:
           subject-name: index.docker.io/${{ github.repository }}
           subject-digest: ${{ needs.build-and-push.outputs.digest }}
-          sbom-path: sbom.spdx.json
+          predicate-type: https://spdx.dev/Document
+          predicate-path: sbom.spdx.json
           push-to-registry: true
 
       - name: Submit SBOM to dependency graph
