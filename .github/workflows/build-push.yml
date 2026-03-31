@@ -16,11 +16,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       digest: ${{ steps.build.outputs.digest }}
+      images: ${{ steps.images.outputs.list }}
+      sbom-files: ${{ steps.sbom.outputs.files }}
     permissions:
-      contents: read
+      contents: write
       packages: write
-      attestations: write
-      id-token: write
 
     steps:
       - name: Checkout repository
@@ -35,6 +35,7 @@ jobs:
       - name: Login to DockerHub
         uses: docker/login-action@v4
         with:
+          registry: index.docker.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
@@ -51,10 +52,14 @@ jobs:
         with:
           images: |
             ghcr.io/${{ github.repository }}
-            ${{ github.repository }}
+            index.docker.io/${{ github.repository }}
           tags: |
             type=ref,event=branch
             type=ref,event=tag
+
+      - name: Resolve image names
+        id: images
+        run: echo "list=$(echo '${{ steps.meta.outputs.json }}' | jq -c '[.tags[] | split(":")[0]] | unique')" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image
         id: build
@@ -66,99 +71,67 @@ jobs:
           push: ${{ github.ref == 'refs/heads/latest' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          sbom: true
           provenance: mode=max
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Attest GHCR image
+      - name: Extract SBOMs from image
+        id: sbom
         if: github.ref == 'refs/heads/latest'
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-name: ghcr.io/${{ github.repository }}
-          subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
+        run: |
+          IMAGE=ghcr.io/${{ github.repository }}:latest
+          CID=$(docker create $IMAGE)
+          docker cp $CID:/usr/local/share/sbom ~/.docker/sbom
+          docker rm $CID
+          echo "files=$(ls ~/.docker/sbom/*.spdx.json | xargs -n1 basename | jq -Rnc '[inputs]')" >> $GITHUB_OUTPUT
 
-      - name: Attest Docker Hub image
+      - name: Upload attestation artifacts
         if: github.ref == 'refs/heads/latest'
-        uses: actions/attest-build-provenance@v4
+        uses: actions/upload-artifact@v4
         with:
-          subject-name: index.docker.io/${{ github.repository }}
-          subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
+          name: .docker
+          path: ~/.docker/
 
-  sbom:
+      - name: Submit SBOMs to dependency graph
+        if: github.ref == 'refs/heads/latest'
+        uses: advanced-security/spdx-dependency-submission-action@v0.2.0
+        with:
+          filePath: ~/.docker/sbom/
+
+  attest:
     needs: build-and-push
     if: github.ref == 'refs/heads/latest'
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        registry: ${{ fromJSON(needs.build-and-push.outputs.images) }}
+        sbom: ${{ fromJSON(needs.build-and-push.outputs.sbom-files) }}
     permissions:
-      contents: write
-      packages: write
       attestations: write
       id-token: write
+      packages: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Login to DockerHub
-        uses: docker/login-action@v4
+      - name: Download attestation artifacts
+        uses: actions/download-artifact@v4
         with:
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          name: .docker
+          path: ~/.docker
 
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+      - name: Attest build provenance
+        if: matrix.sbom == fromJSON(needs.build-and-push.outputs.sbom-files)[0]
+        uses: actions/attest-build-provenance@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Generate SBOM
-        uses: anchore/sbom-action@v0
-        with:
-          image: ghcr.io/${{ github.repository }}:latest
-          format: spdx-json
-          output-file: sbom.spdx.json
-          upload-artifact: false
-          dependency-snapshot: false
-
-      - name: Extract brew manifest from image
-        run: docker run --rm --entrypoint cat ghcr.io/${{ github.repository }}:latest /usr/local/share/sbom/brew.json > brew.json
-
-      - name: Enrich SBOM with Homebrew packages
-        run: python3 .sbom/enrich.py sbom.spdx.json brew.json sbom.spdx.json
-
-      - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom.spdx.json
-          path: sbom.spdx.json
-
-      - name: Attest SBOM to GHCR image
-        uses: actions/attest@v2
-        with:
-          subject-name: ghcr.io/${{ github.repository }}
+          subject-name: ${{ matrix.registry }}
           subject-digest: ${{ needs.build-and-push.outputs.digest }}
-          predicate-type: https://spdx.dev/Document
-          predicate-path: sbom.spdx.json
           push-to-registry: true
 
-      - name: Attest SBOM to Docker Hub image
+      - name: Attest SBOM
         uses: actions/attest@v2
         with:
-          subject-name: index.docker.io/${{ github.repository }}
+          subject-name: ${{ matrix.registry }}
           subject-digest: ${{ needs.build-and-push.outputs.digest }}
-          predicate-type: https://spdx.dev/Document
-          predicate-path: sbom.spdx.json
+          sbom-path: ~/.docker/sbom/${{ matrix.sbom }}
           push-to-registry: true
-
-      - name: Generate dependency snapshot
-        run: python3 .sbom/dependency-snapshot.py sbom.spdx.json
-
-      - name: Submit to dependency graph
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh api repos/${{ github.repository }}/dependency-graph/snapshots --method POST --input sbom.snapshot.json
 
   smoke-test:
     needs: build-and-push
