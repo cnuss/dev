@@ -26,8 +26,10 @@ RUN sudo mkdir -p /usr/local/share/zsh/site-functions && \
 
 RUN /usr/local/bin/syft scan dir:/home/linuxbrew/.linuxbrew --select-catalogers homebrew -o spdx-json=brew.spdx.json
 
+FROM anchore/syft:latest AS syft
+
 FROM ${BASE_IMAGE} AS bins
-COPY --from=homebrew /usr/local/bin/syft /usr/local/bin/syft
+COPY --from=syft /syft /usr/local/bin/syft
 
 COPY .apt .apt
 RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
@@ -35,7 +37,7 @@ RUN .apt/install.sh
 RUN syft scan dir:/ --select-catalogers dpkg -o spdx-json=apt.spdx.json
 
 FROM ${BASE_IMAGE} AS claude
-COPY --from=homebrew /usr/local/bin/syft /usr/local/bin/syft
+COPY --from=syft /syft /usr/local/bin/syft
 
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 COPY .claude .claude
