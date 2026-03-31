@@ -21,6 +21,8 @@ RUN /home/linuxbrew/.linuxbrew/bin/brew bundle --file="./Brewfile" && \
 RUN sudo mkdir -p /usr/local/share/zsh/site-functions && \
     sudo cp -rL /home/linuxbrew/.linuxbrew/share/zsh/site-functions/* /usr/local/share/zsh/site-functions/ && \
     sudo rm -f /usr/local/share/zsh/site-functions/_brew
+RUN sudo mkdir -p /usr/local/share/sbom && \
+    /home/linuxbrew/.linuxbrew/bin/brew info --json=v2 --installed | sudo tee /usr/local/share/sbom/brew.json > /dev/null
 
 FROM ${BASE_IMAGE} AS bins
 
