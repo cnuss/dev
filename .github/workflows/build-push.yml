@@ -80,22 +80,22 @@ jobs:
         run: |
           IMAGE=ghcr.io/${{ github.repository }}:latest
           CID=$(docker create $IMAGE)
-          docker cp $CID:/usr/local/share/sbom $HOME/.docker/sbom
+          docker cp $CID:/usr/local/share/sbom /home/runner/.docker/sbom
           docker rm $CID
-          echo "files=$(ls $HOME/.docker/sbom/*.spdx.json | xargs -n1 basename | jq -Rnc '[inputs]')" >> $GITHUB_OUTPUT
+          echo "files=$(ls /home/runner/.docker/sbom/*.spdx.json | xargs -n1 basename | jq -Rnc '[inputs]')" >> $GITHUB_OUTPUT
 
       - name: Upload attestation artifacts
         if: github.ref == 'refs/heads/latest'
         uses: actions/upload-artifact@v4
         with:
           name: .docker
-          path: ${{ env.HOME }}/.docker/
+          path: /home/runner/.docker/
 
       - name: Submit SBOMs to dependency graph
         if: github.ref == 'refs/heads/latest'
         uses: advanced-security/spdx-dependency-submission-action@v0.2.0
         with:
-          filePath: ${{ env.HOME }}/.docker/sbom/
+          filePath: /home/runner/.docker/sbom/
 
   attest:
     needs: build-and-push
@@ -114,7 +114,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: .docker
-          path: ${{ env.HOME }}/.docker
+          path: /home/runner/.docker
 
       - name: Attest build provenance
         if: matrix.sbom == fromJSON(needs.build-and-push.outputs.sbom-files)[0]
@@ -129,7 +129,7 @@ jobs:
         with:
           subject-name: ${{ matrix.registry }}
           subject-digest: ${{ needs.build-and-push.outputs.digest }}
-          sbom-path: ${{ env.HOME }}/.docker/sbom/${{ matrix.sbom }}
+          sbom-path: /home/runner/.docker/sbom/${{ matrix.sbom }}
           push-to-registry: true
 
   smoke-test:
