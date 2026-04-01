@@ -24,7 +24,7 @@ RUN sudo mkdir -p /usr/local/share/zsh/site-functions && \
     sudo cp -rL /home/linuxbrew/.linuxbrew/share/zsh/site-functions/* /usr/local/share/zsh/site-functions/ && \
     sudo rm -f /usr/local/share/zsh/site-functions/_brew
 
-RUN /usr/local/bin/syft scan dir:/home/linuxbrew/.linuxbrew --select-catalogers homebrew -o spdx-json=brew.spdx.json
+RUN /usr/local/bin/syft scan /home/linuxbrew/.linuxbrew --source-name homebrew --source-version latest --select-catalogers homebrew -o spdx-json=brew.spdx.json
 
 FROM anchore/syft:latest AS syft
 
