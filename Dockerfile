@@ -44,6 +44,13 @@ COPY .claude .claude
 RUN .claude/install.sh
 # DEVNOTE TEMP SKIP SBOM
 
+FROM python:3.11-slim AS sbom
+COPY --from=bins apt.spdx.json /sboms/
+COPY --from=homebrew /home/ubuntu/brew.spdx.json /sboms/
+RUN mkdir /out && pip install --no-cache-dir spdxmerge && \
+    spdxmerge --docpath /sboms/ --outpath /out/ --mergetype 1 --name dev --filetype J \
+      --author cnuss --email noreply@github.com --docnamespace https://github.com/cnuss/dev
+
 FROM ${BASE_IMAGE} AS combined
 COPY --from=bins / /
 COPY --from=claude /usr/local/bin/claude /usr/local/bin/claude
@@ -52,12 +59,9 @@ COPY --from=homebrew /usr/local/bin/ /usr/local/bin/
 COPY --from=homebrew /usr/local/lib/ /usr/local/lib/
 COPY --from=homebrew /usr/local/share/ /usr/local/share/
 COPY --from=homebrew /home/linuxbrew/.linuxbrew/lib/ld.so /home/linuxbrew/.linuxbrew/lib/ld.so
+COPY --from=sbom /out/merged-SBoM-deep.json /usr/local/share/sbom/sbom.spdx.json
 
 RUN ldconfig
-
-# Gather SBOMs
-COPY --from=bins apt.spdx.json /usr/local/share/sbom/
-COPY --from=homebrew /home/ubuntu/brew.spdx.json /usr/local/share/sbom/
 
 FROM scratch AS smoke-test
 # single layer output simulation
