@@ -27,7 +27,7 @@ RUN sudo mkdir -p /usr/local/share/zsh/site-functions && \
     sudo rm -f /usr/local/share/zsh/site-functions/_brew
 
 COPY --from=syft /syft /tmp/syft
-RUN /tmp/syft scan /home/linuxbrew/.linuxbrew --source-name homebrew --source-version latest --select-catalogers +homebrew-cataloger -o spdx-json=brew.spdx.json && sudo rm /tmp/syft
+RUN /tmp/syft scan /home/linuxbrew/.linuxbrew --source-name homebrew --source-version latest --override-default-catalogers homebrew-cataloger -o spdx-json=brew.spdx.json && sudo rm /tmp/syft
 
 FROM ${BASE_IMAGE} AS bins
 COPY --from=syft /syft /tmp/syft
@@ -35,7 +35,7 @@ COPY --from=syft /syft /tmp/syft
 COPY .apt .apt
 RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN .apt/install.sh
-RUN /tmp/syft scan / --source-name apt --source-version latest --select-catalogers +dpkg-db-cataloger -o spdx-json=apt.spdx.json
+RUN /tmp/syft scan / --source-name apt --source-version latest --override-default-catalogers dpkg-db-cataloger -o spdx-json=apt.spdx.json
 
 FROM ${BASE_IMAGE} AS claude
 COPY --from=syft /syft /tmp/syft
