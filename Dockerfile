@@ -1,4 +1,6 @@
 ARG BASE_IMAGE=ubuntu:latest
+FROM anchore/syft:latest AS syft
+
 FROM ${BASE_IMAGE} AS homebrew
 RUN apt-get update && apt-get install -y \
     curl \
@@ -24,20 +26,19 @@ RUN sudo mkdir -p /usr/local/share/zsh/site-functions && \
     sudo cp -rL /home/linuxbrew/.linuxbrew/share/zsh/site-functions/* /usr/local/share/zsh/site-functions/ && \
     sudo rm -f /usr/local/share/zsh/site-functions/_brew
 
-RUN /usr/local/bin/syft scan /home/linuxbrew/.linuxbrew --source-name homebrew --source-version latest --select-catalogers homebrew -o spdx-json=brew.spdx.json
-
-FROM anchore/syft:latest AS syft
+COPY --from=syft /syft /tmp/syft
+RUN /tmp/syft scan /home/linuxbrew/.linuxbrew --source-name homebrew --source-version latest --select-catalogers homebrew -o spdx-json=brew.spdx.json && sudo rm /tmp/syft
 
 FROM ${BASE_IMAGE} AS bins
-COPY --from=syft /syft /usr/local/bin/syft
+COPY --from=syft /syft /tmp/syft
 
 COPY .apt .apt
 RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN .apt/install.sh
-RUN syft scan / --source-name apt --source-version latest --exclude **/syft -o spdx-json=apt.spdx.json
+RUN /tmp/syft scan / --source-name apt --source-version latest --exclude **/tmp/** -o spdx-json=apt.spdx.json
 
 FROM ${BASE_IMAGE} AS claude
-COPY --from=syft /syft /usr/local/bin/syft
+COPY --from=syft /syft /tmp/syft
 
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 COPY .claude .claude
@@ -65,7 +66,7 @@ COPY --from=homebrew /usr/local/share/ /usr/local/share/
 COPY --from=homebrew /home/linuxbrew/.linuxbrew/lib/ld.so /home/linuxbrew/.linuxbrew/lib/ld.so
 COPY --from=sbom /out/merged-SBoM-deep.json /usr/local/share/sbom/sbom.spdx.json
 
-RUN ldconfig
+RUN rm -rf /tmp/* && ldconfig
 
 FROM scratch AS smoke-test
 # single layer output simulation
