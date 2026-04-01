@@ -184,16 +184,16 @@ jobs:
           docker rm $CID
           echo "files=$(ls /home/runner/sbom/*.spdx.json | xargs -n1 basename | jq -Rnc '[inputs]')" >> $GITHUB_OUTPUT
 
-      - name: Upload attestation artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: sbom
-          path: /home/runner/sbom/
-
       - name: Strip Debian epochs for dependency graph
         run: |
           jq '.packages[].versionInfo |= sub("^[0-9]+:";"")' \
             /home/runner/sbom/sbom.spdx.json > /home/runner/sbom/depgraph.spdx.json
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: /home/runner/sbom/
 
       - name: Submit SBOMs to dependency graph
         uses: advanced-security/spdx-dependency-submission-action@v0.2.0
