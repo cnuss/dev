@@ -35,7 +35,7 @@ COPY --from=syft /syft /tmp/syft
 COPY .apt .apt
 RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN .apt/install.sh
-RUN /tmp/syft scan / --source-name apt --source-version latest --exclude **/tmp/** -o spdx-json=apt.spdx.json
+RUN /tmp/syft scan / --source-name apt --source-version latest --select-catalogers +dpkg-db-cataloger -o spdx-json=apt.spdx.json
 
 FROM ${BASE_IMAGE} AS claude
 COPY --from=syft /syft /tmp/syft
