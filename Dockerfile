@@ -27,7 +27,7 @@ RUN sudo mkdir -p /usr/local/share/zsh/site-functions && \
     sudo rm -f /usr/local/share/zsh/site-functions/_brew
 
 COPY --from=syft /syft /tmp/syft
-RUN /tmp/syft scan /home/linuxbrew/.linuxbrew --source-name homebrew --source-version latest --select-catalogers homebrew -o spdx-json=brew.spdx.json && sudo rm /tmp/syft
+RUN /tmp/syft scan /home/linuxbrew/.linuxbrew --source-name homebrew --source-version latest --select-catalogers +homebrew-cataloger -o spdx-json=brew.spdx.json && sudo rm /tmp/syft
 
 FROM ${BASE_IMAGE} AS bins
 COPY --from=syft /syft /tmp/syft
