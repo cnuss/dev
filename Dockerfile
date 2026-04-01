@@ -45,11 +45,15 @@ RUN .claude/install.sh
 # DEVNOTE TEMP SKIP SBOM
 
 FROM python:3.11-slim AS sbom
+ARG SBOM_NAME=dev
+ARG SBOM_AUTHOR=local
+ARG SBOM_EMAIL=local@localhost
+ARG SBOM_NAMESPACE=https://local
 COPY --from=bins apt.spdx.json /sboms/
 COPY --from=homebrew /home/ubuntu/brew.spdx.json /sboms/
 RUN mkdir /out && pip install --no-cache-dir spdxmerge && \
-    spdxmerge --docpath /sboms/ --outpath /out/ --mergetype 1 --name dev --filetype J \
-      --author cnuss --email noreply@github.com --docnamespace https://github.com/cnuss/dev
+    spdxmerge --docpath /sboms/ --outpath /out/ --mergetype 1 --name "$SBOM_NAME" --filetype J \
+      --author "$SBOM_AUTHOR" --email "$SBOM_EMAIL" --docnamespace "$SBOM_NAMESPACE"
 
 FROM ${BASE_IMAGE} AS combined
 COPY --from=bins / /
