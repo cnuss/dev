@@ -186,8 +186,9 @@ jobs:
 
       - name: Strip Debian epochs for dependency graph
         run: |
+          mkdir -p /home/runner/depgraph
           jq '.packages[].versionInfo |= sub("^[0-9]+:";"")' \
-            /home/runner/sbom/sbom.spdx.json > /home/runner/sbom/depgraph.spdx.json
+            /home/runner/sbom/sbom.spdx.json > /home/runner/depgraph/depgraph.spdx.json
 
       - name: Upload SBOM artifacts
         uses: actions/upload-artifact@v7
@@ -198,7 +199,7 @@ jobs:
       - name: Submit SBOMs to dependency graph
         uses: advanced-security/spdx-dependency-submission-action@v0.2.0
         with:
-          filePath: /home/runner/sbom/depgraph.spdx.json
+          filePath: /home/runner/depgraph/
 
       - name: Attest build provenance (GHCR)
         uses: actions/attest-build-provenance@v4
