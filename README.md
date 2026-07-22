@@ -41,9 +41,37 @@ kubectl run dev --rm -it --image=ghcr.io/cnuss/dev -- zsh
 | `ripgrep` (`rg`) | Fast text search |
 | `fzf` | Fuzzy finder |
 
+### Crypto / Tokens
+
+| Tool | Description |
+|------|-------------|
+| `jwt` (jwt-cli) | Encode / decode / inspect JWTs |
+| `step` | JWT sign/verify (incl. JWKS), JWK generation, keypairs, x509 / PKI |
+| `jose` | JWS / **JWE** / JWK — encrypted tokens, which `jwt` and `step` don't cover |
+| `openssl` | Key and certificate primitives |
+
+Verify a Kubernetes service account token against the cluster's JWKS:
+
+```bash
+kubectl create token default \
+  | step crypto jwt verify --jwks <(kubectl get --raw /openid/v1/jwks) --iss https://kubernetes.default.svc
+```
+
 ### Networking
 
 `curl`, `wget`, `dig` / `nslookup`, `ping`, `traceroute`, `netcat`, `telnet`, `tftp`, `ip`, `netstat`, `tcpdump`, `mtr`, `nmap`, `ncat`, `socat`
+
+### Connectivity / Overlay
+
+| Tool | Description |
+|------|-------------|
+| `cloudflared` | Cloudflare Tunnel client — reach a cluster-internal service from outside, or reach out through egress-restricted networks |
+| `tailscale` / `tailscaled` | Tailscale CLI and daemon — join the pod to a tailnet, or use it as a subnet router / exit node |
+
+As with FRR, these ship as binaries only — no baked credentials, no daemon started. Both are runtime concerns:
+
+- `tailscaled` needs `/dev/net/tun` plus `NET_ADMIN`, or `--tun=userspace-networking` to run without them. Auth via `TS_AUTHKEY` / `tailscale up --authkey`.
+- `cloudflared` needs no special capabilities; supply the tunnel token or credentials file at pod start.
 
 ### BGP / Routing
 
@@ -76,7 +104,7 @@ The Dockerfile uses a multi-stage build:
 4. **sbom** - Merges the per-stage Syft SPDX scans into a single SBOM
 5. **combined** - Merges all stages; ships the SBOM at `/usr/local/share/sbom/sbom.spdx.json`
 6. **smoke-test** - Validates all tools work
-7. **final** - Clean single-layer output image with `/bin/zsh` as the default shell
+7. **final** - Clean single-layer output image; `/bin/zsh` is the build `SHELL`, and the default `CMD` is `sleep infinity` so the container idles for `kubectl exec` / `docker exec` instead of exiting
 
 ## CI/CD
 
