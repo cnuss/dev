@@ -86,4 +86,4 @@ ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     LD_LIBRARY_PATH="/usr/local/lib"
 COPY --from=combined / /
 SHELL [ "/bin/zsh", "-c" ]
-CMD ["/bin/zsh"]
+CMD ["sleep", "infinity"]
