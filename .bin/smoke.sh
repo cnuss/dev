@@ -66,3 +66,27 @@ if [ -e "$staged" ]; then
     echo "ssh-node: staged key $staged survived exit" >&2
     exit 1
 fi
+
+# As PID1 for attach, NODE_SSH_KEEPALIVE must hold the container up rather than
+# exit, on both a connection failure and a misconfiguration. timeout kills the
+# held process and returns 124; a clean exit before then is a failure here.
+set +e
+timeout 3 env NODE_SSH_KEEPALIVE=1 NODE_SSH_KEY_FILE="$work/id" NODE_SSH_PORT=1 \
+    ssh-node true >/dev/null 2>&1
+rc=$?
+set -e
+[ "$rc" -eq 124 ] || { echo "ssh-node: keepalive did not hold on connect failure (rc=$rc)" >&2; exit 1; }
+
+set +e
+timeout 3 env NODE_SSH_KEEPALIVE=1 NODE_SSH_KEY_FILE=/nonexistent/key \
+    ssh-node true >/dev/null 2>&1
+rc=$?
+set -e
+[ "$rc" -eq 124 ] || { echo "ssh-node: keepalive did not hold on missing creds (rc=$rc)" >&2; exit 1; }
+
+# Without keepalive the same connection failure exits fast (ssh rc 255), not held.
+set +e
+timeout 5 env NODE_SSH_KEY_FILE="$work/id" NODE_SSH_PORT=1 ssh-node true >/dev/null 2>&1
+rc=$?
+set -e
+[ "$rc" -eq 255 ] || { echo "ssh-node: expected rc 255 without keepalive, got $rc" >&2; exit 1; }

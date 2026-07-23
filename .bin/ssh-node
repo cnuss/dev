@@ -57,11 +57,25 @@ workdir="$(umask 077; mktemp -d)"
 cleanup() { rm -rf "$workdir"; }
 trap cleanup EXIT
 
+# When ssh-node is the container's PID1 for `kubectl attach`, exiting on a
+# misconfiguration would CrashLoopBackOff the sidecar. NODE_SSH_KEEPALIVE holds
+# the container up instead, so it stays attachable and shows the reason. Nothing
+# is left connected to the node. Retrying means restarting the pod once fixed.
+hold_or_exit() {
+    local code="$1"
+    if [ -n "${NODE_SSH_KEEPALIVE:-}" ]; then
+        echo "ssh-node: NODE_SSH_KEEPALIVE set; holding the container up. Fix the above and restart the pod." >&2
+        cleanup
+        exec sleep infinity
+    fi
+    exit "$code"
+}
+
 die() {
     for line in "$@"; do
         echo "ssh-node: $line" >&2
     done
-    exit 1
+    hold_or_exit 1
 }
 
 # Secret volumes mount read-only at mode 0444, which ssh rejects as an
@@ -167,4 +181,16 @@ fi
 
 # Deliberately not exec: the workdir holds private key material and the EXIT
 # trap is what removes it. exec would replace this shell and leak it.
+set +e
 ssh "$@"
+rc=$?
+set -e
+
+# rc 255 is an ssh-level failure — connection refused, auth rejected, host key
+# mismatch — i.e. no session ever started. As PID1 that would crash-loop, so
+# under keepalive hold instead. Any other rc means a session ran and ended;
+# exit with it so `restartPolicy: Always` recycles the sidecar for a fresh one.
+if [ "$rc" -eq 255 ]; then
+    hold_or_exit "$rc"
+fi
+exit "$rc"
