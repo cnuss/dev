@@ -105,6 +105,8 @@ noded                 # interactive shell on the host
 noded systemctl status kubelet
 ```
 
+The image bakes `NODED_PROVISION=1` and `NODED_KEEPALIVE=1` as defaults, so a sidecar only needs `command: ["noded"]` plus a read-write `/etc/ssh` hostPath — no env wiring — to self-provision and land on the node. Both are overridable: set `NODED_CA_URL` or `NODED_KEY_FILE` and that credential wins (self-provision is the last-resort source), or set `NODED_KEEPALIVE=` (empty) to make failures exit instead of holding. The default `CMD` is still `sleep infinity`, so these only take effect when `noded` runs.
+
 #### Certificate mode (preferred)
 
 The node trusts a **CA public key** rather than a list of user keys. `noded` generates a keypair inside the pod, has step-ca sign a short-lived certificate for it, and throws both away when the session ends. No key material ships in this image, none is stored, and revocation is a CA concern rather than an `authorized_keys` edit on every node.
@@ -112,19 +114,19 @@ The node trusts a **CA public key** rather than a list of user keys. `noded` gen
 The pod authenticates to the CA with its own Kubernetes service account token, so there is no bootstrap secret to distribute.
 
 ```bash
-export NODE_SSH_CA_URL=https://ca.internal:9000
-export NODE_SSH_CA_PROVISIONER=flex-debug
+export NODED_CA_URL=https://ca.internal:9000
+export NODED_CA_PROVISIONER=flex-debug
 noded
 ```
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `NODE_SSH_CA_URL` | — | step-ca URL; setting it enables certificate mode |
-| `NODE_SSH_CA_PROVISIONER` | — | Provisioner that issues user certificates |
-| `NODE_SSH_CA_ROOT` | `/keys/ca.crt` | CA root certificate |
-| `NODE_SSH_CA_TOKEN_FILE` | pod SA token | Token used to authenticate to the CA |
-| `NODE_SSH_CERT_VALIDITY` | `10m` | Certificate lifetime |
-| `NODE_SSH_PRINCIPAL` | `$NODE_SSH_USER` | Certificate principal |
+| `NODED_CA_URL` | — | step-ca URL; setting it enables certificate mode |
+| `NODED_CA_PROVISIONER` | — | Provisioner that issues user certificates |
+| `NODED_CA_ROOT` | `/keys/ca.crt` | CA root certificate |
+| `NODED_CA_TOKEN_FILE` | pod SA token | Token used to authenticate to the CA |
+| `NODED_CERT_VALIDITY` | `10m` | Certificate lifetime |
+| `NODED_PRINCIPAL` | `$NODED_USER` | Certificate principal |
 
 Node side, via cloud-init:
 
@@ -134,19 +136,19 @@ TrustedUserCAKeys /etc/ssh/ssh_user_ca.pub
 HostCertificate   /etc/ssh/ssh_host_ed25519_key-cert.pub
 ```
 
-Set `NODE_SSH_HOST_CA_FILE` (or `NODE_SSH_HOST_CA`) to the **host** CA public key and `noded` verifies the node's identity against it, replacing trust-on-first-use with strict checking — worth doing, since the default target is `127.0.0.1` over a shared netns.
+Set `NODED_HOST_CA_FILE` (or `NODED_HOST_CA`) to the **host** CA public key and `noded` verifies the node's identity against it, replacing trust-on-first-use with strict checking — worth doing, since the default target is `127.0.0.1` over a shared netns.
 
 #### Self-provision mode (no external CA, no Secret)
 
-With `NODE_SSH_PROVISION=1` and the node's `/etc/ssh` hostPath-mounted read-write, `noded` bootstraps trust itself: it mints a throwaway user CA in the pod, writes the **public** half plus a `TrustedUserCAKeys` drop-in into `/etc/ssh/sshd_config.d/`, then self-signs a short-lived client certificate. No step-ca and no Secret required.
+With `NODED_PROVISION=1` and the node's `/etc/ssh` hostPath-mounted read-write, `noded` bootstraps trust itself: it mints a throwaway user CA in the pod, writes the **public** half plus a `TrustedUserCAKeys` drop-in into `/etc/ssh/sshd_config.d/`, then self-signs a short-lived client certificate. No step-ca and no Secret required.
 
 This works only because Ubuntu serves ssh through `ssh.socket` — a fresh `sshd` per connection re-reads `sshd_config.d/*` every time, so the new trust is live on the next connection with no reload signalled (the container can't signal the host sshd; it lives in the `kube1` PID namespace).
 
 ```yaml
 command: ["noded"]
 env:
-  - { name: NODE_SSH_PROVISION, value: "1" }
-  - { name: NODE_SSH_KEEPALIVE, value: "1" }
+  - { name: NODED_PROVISION, value: "1" }
+  - { name: NODED_KEEPALIVE, value: "1" }
 volumeMounts:
   - { name: host-etc-ssh, mountPath: /etc/ssh }   # read-write
 volumes:
@@ -164,13 +166,13 @@ The CA **private** key never leaves the pod's tmpfs, so it dies with the pod; th
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `NODE_SSH_KEY_FILE` | `/keys/id_ed25519` | Private key path |
-| `NODE_SSH_KEY` | — | Key material inline; takes precedence over the file |
-| `NODE_SSH_CERT_FILE` | — | Pre-minted certificate to present with the key |
-| `NODE_SSH_USER` | `ubuntu` | Login user |
-| `NODE_SSH_HOST` | `127.0.0.1` | Target host |
-| `NODE_SSH_PORT` | `22` | Target port |
-| `NODE_SSH_DRY_RUN` | — | Print the ssh command instead of running it |
+| `NODED_KEY_FILE` | `/keys/id_ed25519` | Private key path |
+| `NODED_KEY` | — | Key material inline; takes precedence over the file |
+| `NODED_CERT_FILE` | — | Pre-minted certificate to present with the key |
+| `NODED_USER` | `ubuntu` | Login user |
+| `NODED_HOST` | `127.0.0.1` | Target host |
+| `NODED_PORT` | `22` | Target port |
+| `NODED_DRY_RUN` | — | Print the ssh command instead of running it |
 
 Use a dedicated throwaway keypair, never an operator's real key:
 

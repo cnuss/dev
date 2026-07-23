@@ -7,55 +7,56 @@
 # rather than on the EC2 host. ssh to the host sshd over the shared netns is
 # the only container -> host path, which is what this wraps.
 #
-# Credentials, in priority order:
+# Credentials, in priority order (first configured one wins):
 #
-#   0. Self-provisioned CA via a hostPath /etc/ssh  (NODE_SSH_PROVISION)
-#   1. A certificate and key you supply    (NODE_SSH_CERT_FILE + NODE_SSH_KEY_FILE)
-#   2. A certificate minted per session    (NODE_SSH_CA_URL, via step-ca)
-#   3. A bare private key                  (NODE_SSH_KEY_FILE or NODE_SSH_KEY)
+#   1. A certificate and key you supply    (NODED_CERT_FILE + NODED_KEY_FILE)
+#   2. A certificate minted per session    (NODED_CA_URL, via step-ca)
+#   3. A bare private key                  (NODED_KEY or a key at NODED_KEY_FILE)
+#   4. Self-provisioned CA via /etc/ssh    (NODED_PROVISION) — the fallback
 #
-# Modes 0 and 2 are preferred: the node trusts only a CA public key, the keypair
-# is generated inside the pod and never leaves it, and the certificate expires on
-# its own. Nothing durable is stored and no key material ships in this image.
-# Mode 0 needs no external CA or Secret but requires a writable hostPath mount of
-# the node's /etc/ssh; see provision_via_etc_ssh below.
+# Self-provision is intentionally last so it can be baked on as an image default
+# without shadowing a configured CA or key: it is used only when nothing else is
+# supplied. It needs no external CA or Secret, just a writable hostPath mount of
+# the node's /etc/ssh (see provision_via_etc_ssh). It and step-ca are preferred —
+# the node trusts only a CA public key, the keypair is generated in the pod and
+# never leaves it, the certificate expires on its own, and the image ships nothing.
 #
 # Environment:
-#   NODE_SSH_USER          login user                (default ubuntu)
-#   NODE_SSH_HOST          target host               (default 127.0.0.1)
-#   NODE_SSH_PORT          target port               (default 22)
-#   NODE_SSH_PRINCIPAL     certificate principal     (default $NODE_SSH_USER)
+#   NODED_USER          login user                (default ubuntu)
+#   NODED_HOST          target host               (default 127.0.0.1)
+#   NODED_PORT          target port               (default 22)
+#   NODED_PRINCIPAL     certificate principal     (default $NODED_USER)
 #
-#   NODE_SSH_PROVISION     mint a CA in-pod and publish trust to a hostPath /etc/ssh
-#   NODE_SSH_ETC_SSH       node /etc/ssh mount point (default /etc/ssh)
+#   NODED_PROVISION     mint a CA in-pod and publish trust to a hostPath /etc/ssh
+#   NODED_ETC_SSH       node /etc/ssh mount point (default /etc/ssh)
 #
-#   NODE_SSH_CA_URL        step-ca URL; enables certificate mode
-#   NODE_SSH_CA_ROOT       CA root certificate file  (default /keys/ca.crt)
-#   NODE_SSH_CA_PROVISIONER  step-ca provisioner name
-#   NODE_SSH_CA_TOKEN_FILE k8s service account token used to authenticate to
+#   NODED_CA_URL        step-ca URL; enables certificate mode
+#   NODED_CA_ROOT       CA root certificate file  (default /keys/ca.crt)
+#   NODED_CA_PROVISIONER  step-ca provisioner name
+#   NODED_CA_TOKEN_FILE k8s service account token used to authenticate to
 #                          the CA (default the pod's projected SA token)
-#   NODE_SSH_CERT_VALIDITY certificate lifetime      (default 10m)
+#   NODED_CERT_VALIDITY certificate lifetime      (default 10m)
 #
-#   NODE_SSH_HOST_CA_FILE  host CA public key; when set, host identity is
-#   NODE_SSH_HOST_CA       verified against it instead of trust-on-first-use
+#   NODED_HOST_CA_FILE  host CA public key; when set, host identity is
+#   NODED_HOST_CA       verified against it instead of trust-on-first-use
 #
-#   NODE_SSH_CERT_FILE     pre-minted certificate
-#   NODE_SSH_KEY_FILE      private key path          (default /keys/id_ed25519)
-#   NODE_SSH_KEY           private key material, preferred over the file
+#   NODED_CERT_FILE     pre-minted certificate
+#   NODED_KEY_FILE      private key path          (default /keys/id_ed25519)
+#   NODED_KEY           private key material, preferred over the file
 #
-#   NODE_SSH_DRY_RUN       print the ssh command instead of running it
+#   NODED_DRY_RUN       print the ssh command instead of running it
 #
 # Extra arguments are passed to ssh as a remote command; with none you get an
 # interactive shell. Usable as a container command, so `command: ["noded"]`
 # plus `kubectl attach` drops straight onto the host.
 set -euo pipefail
 
-user="${NODE_SSH_USER:-ubuntu}"
-host="${NODE_SSH_HOST:-127.0.0.1}"
-port="${NODE_SSH_PORT:-22}"
-principal="${NODE_SSH_PRINCIPAL:-$user}"
-key_file="${NODE_SSH_KEY_FILE:-/keys/id_ed25519}"
-cert_file="${NODE_SSH_CERT_FILE:-}"
+user="${NODED_USER:-ubuntu}"
+host="${NODED_HOST:-127.0.0.1}"
+port="${NODED_PORT:-22}"
+principal="${NODED_PRINCIPAL:-$user}"
+key_file="${NODED_KEY_FILE:-/keys/id_ed25519}"
+cert_file="${NODED_CERT_FILE:-}"
 
 # Everything transient — generated keys, minted certificates, known_hosts —
 # lives here and is removed on exit.
@@ -78,13 +79,13 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 
 # When noded is the container's PID1 for `kubectl attach`, exiting on a
-# misconfiguration would CrashLoopBackOff the sidecar. NODE_SSH_KEEPALIVE holds
+# misconfiguration would CrashLoopBackOff the sidecar. NODED_KEEPALIVE holds
 # the container up instead, so it stays attachable and shows the reason. Nothing
 # is left connected to the node. Retrying means restarting the pod once fixed.
 hold_or_exit() {
     local code="$1"
-    if [ -n "${NODE_SSH_KEEPALIVE:-}" ]; then
-        echo "noded: NODE_SSH_KEEPALIVE set; holding the container up. Fix the above and restart the pod." >&2
+    if [ -n "${NODED_KEEPALIVE:-}" ]; then
+        echo "noded: NODED_KEEPALIVE set; holding the container up. Fix the above and restart the pod." >&2
         cleanup
         exec sleep infinity
     fi
@@ -110,26 +111,26 @@ stage_private_file() {
 
 mint_certificate() {
     local ca_url="$1"
-    local ca_root="${NODE_SSH_CA_ROOT:-/keys/ca.crt}"
-    local token_file="${NODE_SSH_CA_TOKEN_FILE:-/var/run/secrets/kubernetes.io/serviceaccount/token}"
-    local validity="${NODE_SSH_CERT_VALIDITY:-10m}"
+    local ca_root="${NODED_CA_ROOT:-/keys/ca.crt}"
+    local token_file="${NODED_CA_TOKEN_FILE:-/var/run/secrets/kubernetes.io/serviceaccount/token}"
+    local validity="${NODED_CERT_VALIDITY:-10m}"
     local key_id="${HOSTNAME:-noded}"
 
-    [ -n "${NODE_SSH_CA_PROVISIONER:-}" ] ||
-        die "NODE_SSH_CA_URL is set but NODE_SSH_CA_PROVISIONER is not" \
+    [ -n "${NODED_CA_PROVISIONER:-}" ] ||
+        die "NODED_CA_URL is set but NODED_CA_PROVISIONER is not" \
             "set it to the step-ca provisioner that issues user certificates"
     [ -r "$ca_root" ] ||
         die "CA root certificate not readable at ${ca_root}" \
-            "mount it there or set NODE_SSH_CA_ROOT"
+            "mount it there or set NODED_CA_ROOT"
     [ -r "$token_file" ] ||
         die "no service account token at ${token_file}" \
-            "set NODE_SSH_CA_TOKEN_FILE, or give the pod a projected SA token"
+            "set NODED_CA_TOKEN_FILE, or give the pod a projected SA token"
 
     # step writes <key>, <key>.pub and <key>-cert.pub next to the key path.
     step ssh certificate \
         --ca-url "$ca_url" \
         --root "$ca_root" \
-        --provisioner "$NODE_SSH_CA_PROVISIONER" \
+        --provisioner "$NODED_CA_PROVISIONER" \
         --k8ssa-token-path "$token_file" \
         --principal "$principal" \
         --not-after "$validity" \
@@ -149,8 +150,8 @@ mint_certificate() {
 # ssh.socket (a fresh sshd per connection re-reads sshd_config.d, so no reload
 # has to be signalled to a host process the container can't see).
 provision_via_etc_ssh() {
-    local etc_ssh="${NODE_SSH_ETC_SSH:-/etc/ssh}"
-    local validity="${NODE_SSH_CERT_VALIDITY:-10m}"
+    local etc_ssh="${NODED_ETC_SSH:-/etc/ssh}"
+    local validity="${NODED_CERT_VALIDITY:-10m}"
     local key_id="${HOSTNAME:-noded}"
     local ca_pub="$etc_ssh/flex_debug_user_ca.pub"
     local conf="$etc_ssh/sshd_config.d/50-flex-debug.conf"
@@ -186,25 +187,28 @@ provision_via_etc_ssh() {
     cert_file="$workdir/id-cert.pub"
 }
 
-if [ -n "${NODE_SSH_PROVISION:-}" ]; then
-    provision_via_etc_ssh
-elif [ -n "$cert_file" ]; then
+# Explicit credentials win; self-provisioning is the last-resort default so it
+# can be baked on as an image ENV without shadowing a configured CA or key.
+if [ -n "$cert_file" ]; then
     [ -r "$cert_file" ] || die "certificate not readable at ${cert_file}"
-    [ -r "$key_file" ] || die "NODE_SSH_CERT_FILE is set but no key at ${key_file}"
+    [ -r "$key_file" ] || die "NODED_CERT_FILE is set but no key at ${key_file}"
     cert_file="$(stage_private_file "$cert_file" cert.pub)"
     key_file="$(stage_private_file "$key_file" id)"
-elif [ -n "${NODE_SSH_CA_URL:-}" ]; then
-    mint_certificate "$NODE_SSH_CA_URL"
-elif [ -n "${NODE_SSH_KEY:-}" ]; then
-    printf '%s\n' "$NODE_SSH_KEY" > "$workdir/id"
+elif [ -n "${NODED_CA_URL:-}" ]; then
+    mint_certificate "$NODED_CA_URL"
+elif [ -n "${NODED_KEY:-}" ]; then
+    printf '%s\n' "$NODED_KEY" > "$workdir/id"
     chmod 0600 "$workdir/id"
     key_file="$workdir/id"
 elif [ -r "$key_file" ]; then
     key_file="$(stage_private_file "$key_file" id)"
+elif [ -n "${NODED_PROVISION:-}" ]; then
+    provision_via_etc_ssh
 else
     die "no credentials available" \
-        "certificate mode: set NODE_SSH_CA_URL and NODE_SSH_CA_PROVISIONER" \
-        "key mode: mount a Secret at ${key_file}, or set NODE_SSH_KEY"
+        "self-provision: set NODED_PROVISION=1 with the node's /etc/ssh hostPath-mounted" \
+        "certificate mode: set NODED_CA_URL and NODED_CA_PROVISIONER" \
+        "key mode: mount a Secret at ${key_file}, or set NODED_KEY"
 fi
 
 ssh_opts=(
@@ -216,11 +220,11 @@ ssh_opts=(
 # A host CA lets the client verify the node rather than trusting whatever key
 # answers first. Without one, fall back to trust-on-first-use.
 host_ca=
-if [ -n "${NODE_SSH_HOST_CA_FILE:-}" ]; then
-    [ -r "$NODE_SSH_HOST_CA_FILE" ] || die "host CA not readable at ${NODE_SSH_HOST_CA_FILE}"
-    host_ca="$(cat "$NODE_SSH_HOST_CA_FILE")"
-elif [ -n "${NODE_SSH_HOST_CA:-}" ]; then
-    host_ca="$NODE_SSH_HOST_CA"
+if [ -n "${NODED_HOST_CA_FILE:-}" ]; then
+    [ -r "$NODED_HOST_CA_FILE" ] || die "host CA not readable at ${NODED_HOST_CA_FILE}"
+    host_ca="$(cat "$NODED_HOST_CA_FILE")"
+elif [ -n "${NODED_HOST_CA:-}" ]; then
+    host_ca="$NODED_HOST_CA"
 fi
 
 if [ -n "$host_ca" ]; then
@@ -239,7 +243,7 @@ fi
 
 set -- -tt "${ssh_opts[@]}" -i "$key_file" -p "$port" "${user}@${host}" "$@"
 
-if [ -n "${NODE_SSH_DRY_RUN:-}" ]; then
+if [ -n "${NODED_DRY_RUN:-}" ]; then
     printf 'ssh'
     printf ' %q' "$@"
     printf '\n'
