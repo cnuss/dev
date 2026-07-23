@@ -115,6 +115,9 @@ jobs:
       - name: Claude smoke test
         run: .claude/smoke.sh
 
+      - name: Image helper smoke test
+        run: .bin/smoke.sh
+
   smoke-arm:
     needs: build-arm
     runs-on: ubuntu-24.04-arm
@@ -135,6 +138,9 @@ jobs:
 
       - name: Claude smoke test
         run: .claude/smoke.sh
+
+      - name: Image helper smoke test
+        run: .bin/smoke.sh
 
   push:
     needs: [smoke-amd, smoke-arm]
@@ -281,3 +287,6 @@ jobs:
 
       - name: Claude smoke test
         run: .claude/smoke.sh
+
+      - name: Image helper smoke test
+        run: .bin/smoke.sh

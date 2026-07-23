@@ -68,6 +68,8 @@ COPY --from=homebrew /usr/local/lib/ /usr/local/lib/
 COPY --from=homebrew /usr/local/share/ /usr/local/share/
 COPY --from=homebrew /home/linuxbrew/.linuxbrew/lib/ld.so /home/linuxbrew/.linuxbrew/lib/ld.so
 COPY --from=sbom /out/merged-SBoM-deep.json /usr/local/share/sbom/sbom.spdx.json
+COPY .bin/ssh-node /usr/local/bin/ssh-node
+RUN chmod 0755 /usr/local/bin/ssh-node
 
 RUN rm -rf /tmp/* && ldconfig
 
@@ -82,6 +84,7 @@ COPY . .
 RUN .apt/smoke.sh
 RUN .claude/smoke.sh
 RUN .homebrew/smoke.sh
+RUN .bin/smoke.sh
 
 FROM scratch AS final
 # single layer output
