@@ -196,28 +196,55 @@ jobs:
           docker rm $CID
           echo "files=$(ls /home/runner/sbom/*.spdx.json | xargs -n1 basename | jq -Rnc '[inputs]')" >> $GITHUB_OUTPUT
 
-      - name: Strip Debian epochs for dependency graph
+      - name: Normalize purl versions for dependency graph
         run: |
           mkdir -p /home/runner/depgraph
           # The submission action parses the purl in externalRefs, not versionInfo,
-          # so stripping versionInfo alone left "pkg:deb/ubuntu/bsdutils@1%3A2.41.3"
-          # intact. Those packages were rejected and silently dropped from the
-          # snapshot while the job still went green. Strip both.
-          jq '.packages[].externalRefs[]? |= (
-                if .referenceType == "purl"
-                then .referenceLocator |= sub("@[0-9]+%3A"; "@")
-                else . end
-              )
-              | .packages[].versionInfo |= sub("^[0-9]+:"; "")' \
-            /home/runner/sbom/sbom.spdx.json > /home/runner/depgraph/depgraph.spdx.json
+          # and rejects any percent-encoding in the version segment with
+          # "Invalid purl: version must be percent-encoded". Affected packages are
+          # logged as "<name>@undefined", skipped, and the snapshot still reports
+          # success — so the loss is invisible unless you read the log.
+          #
+          # Debian versions hit this two ways: epochs (1%3A2.41.3) and "+" in
+          # +dfsg/+really style versions (1.35%2Bdfsg-4). Drop the epoch, which
+          # the dependency graph has no concept of, and decode %2B back to a
+          # literal "+", which the action accepts. Scoped to the version segment
+          # so qualifiers such as upstream=util-linux%402.41.3 stay encoded.
+          # Kept outside /home/runner/depgraph — the submission action is pointed
+          # at that directory and should only find the snapshot there.
+          cat > /home/runner/purl-fix.jq <<'JQ'
+          def fix_version_segment:
+            if test("^pkg:[^@]+@")
+            then
+              capture("^(?<p>pkg:[^@]+@)(?<v>[^?]*)(?<r>.*)$")
+              | .p + (.v | sub("^[0-9]+%3A"; "") | gsub("%2B"; "+")) + .r
+            else . end;
 
-          # Fail loudly if any epoch survives in a purl version position; a
-          # silent drop is worse than a red build here.
+          .packages[].externalRefs[]? |= (
+            if .referenceType == "purl"
+            then .referenceLocator |= fix_version_segment
+            else . end
+          )
+          | .packages[].versionInfo |= sub("^[0-9]+:"; "")
+          JQ
+
+          jq -f /home/runner/purl-fix.jq /home/runner/sbom/sbom.spdx.json \
+            > /home/runner/depgraph/depgraph.spdx.json
+
+          # Guard on any percent-encoding left in a version, not just the two
+          # cases seen so far. The previous epoch-only check passed while 29
+          # packages were still being dropped for %2B; a silent drop is worse
+          # than a red build here.
           remaining=$(jq '[.packages[]
             | (.externalRefs[]? | select(.referenceType == "purl") | .referenceLocator)
-            | select(test("@[0-9]+%3A"))] | length' /home/runner/depgraph/depgraph.spdx.json)
+            | capture("^pkg:[^@]+@(?<v>[^?]*)").v
+            | select(test("%"))] | length' /home/runner/depgraph/depgraph.spdx.json)
           if [ "$remaining" != "0" ]; then
-            echo "::error::$remaining purl(s) still carry a Debian epoch; they would be dropped from the dependency graph"
+            echo "::error::$remaining purl(s) still percent-encoded in the version segment; they would be dropped from the dependency graph"
+            jq -r '.packages[]
+              | (.externalRefs[]? | select(.referenceType == "purl") | .referenceLocator)
+              | select(capture("^pkg:[^@]+@(?<v>[^?]*)").v | test("%"))' \
+              /home/runner/depgraph/depgraph.spdx.json
             exit 1
           fi
 
