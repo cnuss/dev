@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -e
 
+# The final image bakes NODED_PROVISION=1 and NODED_KEEPALIVE=1, and CI runs this
+# script inside that image. Clear them so each test controls its own environment;
+# otherwise the no-credential and no-keepalive cases would hold (sleep infinity)
+# instead of exiting, and the job hangs.
+unset NODED_PROVISION NODED_KEEPALIVE
+
 ssh -V
 step --version >/dev/null
 
