@@ -94,6 +94,12 @@ nsenter --target 1 --mount --uts --ipc --net --pid -- ip addr
 
 `util-linux` is `Essential` in the Ubuntu base, but it's pinned in `.apt/packages` and smoke-tested so a slimmer `BASE_IMAGE` can't silently drop it.
 
+### Node Host Access (`noded`)
+
+`noded` shells from the privileged `debug: true` sidecar onto the underlying flex-node EC2 host — the container shares the host's network namespace, so the host sshd is reachable at `127.0.0.1:22` even though `nsenter` can't reach the host (its PID/mount namespaces belong to the `kube1` nspawn machine). The image bakes `NODED_PROVISION=1` and `NODED_KEEPALIVE=1`, so a sidecar needs only `command: ["noded"]` plus a read-write `/etc/ssh` hostPath to self-provision host trust and land on the node.
+
+See **[.bin/noded.md](.bin/noded.md)** for the deployment manifest, credential modes (self-provision / step-ca / key), the `s` vs `a` distinction, and the full environment reference.
+
 ### General
 
 `git`, `zsh`, `vim`, `less`, `busybox`, `tar`, `gzip`, `bzip2`, `xz`, `unzip`, `sudo`
