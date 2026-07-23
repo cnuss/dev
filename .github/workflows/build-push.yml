@@ -5,10 +5,16 @@ on:
     branches:
       - latest
   pull_request:
+  schedule:
+    # Weekly rebuild (Mondays 06:00 UTC) to pick up base image and package
+    # updates. Runs on the default branch, so it publishes like a push.
+    - cron: '0 6 * * 1'
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Scheduled runs share github.ref with pushes to latest, so keep them in
+  # separate groups — otherwise a cron firing mid-merge cancels the merge build.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
@@ -41,6 +47,9 @@ jobs:
           platforms: linux/amd64
           pull: true
           push: ${{ github.ref == 'refs/heads/latest' }}
+          # A cached scheduled run would reinstall the exact same packages and
+          # defeat the point of rebuilding, so bypass the cache on cron.
+          no-cache: ${{ github.event_name == 'schedule' }}
           tags: ghcr.io/${{ github.repository }}:amd-sha-${{ github.sha }}
           cache-from: type=gha,scope=amd
           cache-to: type=gha,mode=max,scope=amd
@@ -73,6 +82,9 @@ jobs:
           platforms: linux/arm64
           pull: true
           push: ${{ github.ref == 'refs/heads/latest' }}
+          # A cached scheduled run would reinstall the exact same packages and
+          # defeat the point of rebuilding, so bypass the cache on cron.
+          no-cache: ${{ github.event_name == 'schedule' }}
           tags: ghcr.io/${{ github.repository }}:arm-sha-${{ github.sha }}
           cache-from: type=gha,scope=arm
           cache-to: type=gha,mode=max,scope=arm
