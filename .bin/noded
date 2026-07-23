@@ -9,19 +9,25 @@
 #
 # Credentials, in priority order:
 #
+#   0. Self-provisioned CA via a hostPath /etc/ssh  (NODE_SSH_PROVISION)
 #   1. A certificate and key you supply    (NODE_SSH_CERT_FILE + NODE_SSH_KEY_FILE)
 #   2. A certificate minted per session    (NODE_SSH_CA_URL, via step-ca)
 #   3. A bare private key                  (NODE_SSH_KEY_FILE or NODE_SSH_KEY)
 #
-# Mode 2 is preferred: the node trusts only the CA public key, the keypair is
-# generated inside the pod and never leaves it, and the certificate expires on
+# Modes 0 and 2 are preferred: the node trusts only a CA public key, the keypair
+# is generated inside the pod and never leaves it, and the certificate expires on
 # its own. Nothing durable is stored and no key material ships in this image.
+# Mode 0 needs no external CA or Secret but requires a writable hostPath mount of
+# the node's /etc/ssh; see provision_via_etc_ssh below.
 #
 # Environment:
 #   NODE_SSH_USER          login user                (default ubuntu)
 #   NODE_SSH_HOST          target host               (default 127.0.0.1)
 #   NODE_SSH_PORT          target port               (default 22)
 #   NODE_SSH_PRINCIPAL     certificate principal     (default $NODE_SSH_USER)
+#
+#   NODE_SSH_PROVISION     mint a CA in-pod and publish trust to a hostPath /etc/ssh
+#   NODE_SSH_ETC_SSH       node /etc/ssh mount point (default /etc/ssh)
 #
 #   NODE_SSH_CA_URL        step-ca URL; enables certificate mode
 #   NODE_SSH_CA_ROOT       CA root certificate file  (default /keys/ca.crt)
@@ -40,7 +46,7 @@
 #   NODE_SSH_DRY_RUN       print the ssh command instead of running it
 #
 # Extra arguments are passed to ssh as a remote command; with none you get an
-# interactive shell. Usable as a container command, so `command: ["ssh-node"]`
+# interactive shell. Usable as a container command, so `command: ["noded"]`
 # plus `kubectl attach` drops straight onto the host.
 set -euo pipefail
 
@@ -54,17 +60,31 @@ cert_file="${NODE_SSH_CERT_FILE:-}"
 # Everything transient — generated keys, minted certificates, known_hosts —
 # lives here and is removed on exit.
 workdir="$(umask 077; mktemp -d)"
-cleanup() { rm -rf "$workdir"; }
+published_ca=
+published_conf=
+cleanup() {
+    rm -rf "$workdir"
+    # Self-provisioned CA trust is best-effort revoked so a stopped debug pod
+    # doesn't leave the node trusting a CA. The private half is ephemeral (it
+    # lived only in $workdir), so a residue after SIGKILL trusts a key nobody
+    # holds — inert, and overwritten by the next pod.
+    [ -n "$published_conf" ] && rm -f "$published_conf" 2>/dev/null || true
+    [ -n "$published_ca" ] && rm -f "$published_ca" 2>/dev/null || true
+}
 trap cleanup EXIT
+# k8s sends SIGTERM then SIGKILL after the grace period; run cleanup on TERM/INT
+# via the EXIT trap so a graceful stop revokes the published trust.
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
-# When ssh-node is the container's PID1 for `kubectl attach`, exiting on a
+# When noded is the container's PID1 for `kubectl attach`, exiting on a
 # misconfiguration would CrashLoopBackOff the sidecar. NODE_SSH_KEEPALIVE holds
 # the container up instead, so it stays attachable and shows the reason. Nothing
 # is left connected to the node. Retrying means restarting the pod once fixed.
 hold_or_exit() {
     local code="$1"
     if [ -n "${NODE_SSH_KEEPALIVE:-}" ]; then
-        echo "ssh-node: NODE_SSH_KEEPALIVE set; holding the container up. Fix the above and restart the pod." >&2
+        echo "noded: NODE_SSH_KEEPALIVE set; holding the container up. Fix the above and restart the pod." >&2
         cleanup
         exec sleep infinity
     fi
@@ -73,7 +93,7 @@ hold_or_exit() {
 
 die() {
     for line in "$@"; do
-        echo "ssh-node: $line" >&2
+        echo "noded: $line" >&2
     done
     hold_or_exit 1
 }
@@ -93,7 +113,7 @@ mint_certificate() {
     local ca_root="${NODE_SSH_CA_ROOT:-/keys/ca.crt}"
     local token_file="${NODE_SSH_CA_TOKEN_FILE:-/var/run/secrets/kubernetes.io/serviceaccount/token}"
     local validity="${NODE_SSH_CERT_VALIDITY:-10m}"
-    local key_id="${HOSTNAME:-ssh-node}"
+    local key_id="${HOSTNAME:-noded}"
 
     [ -n "${NODE_SSH_CA_PROVISIONER:-}" ] ||
         die "NODE_SSH_CA_URL is set but NODE_SSH_CA_PROVISIONER is not" \
@@ -121,7 +141,54 @@ mint_certificate() {
     cert_file="$workdir/id_ed25519-cert.pub"
 }
 
-if [ -n "$cert_file" ]; then
+# Self-provision: mint a throwaway CA in the pod, publish its public half into
+# the node's /etc/ssh (hostPath-mounted here) so the socket-activated sshd trusts
+# it on the next connection, then self-sign a short-lived client certificate.
+# No CA, Secret, or cloud-init needed — but it requires a writable hostPath mount
+# of the node's /etc/ssh, which only works because Ubuntu serves ssh via
+# ssh.socket (a fresh sshd per connection re-reads sshd_config.d, so no reload
+# has to be signalled to a host process the container can't see).
+provision_via_etc_ssh() {
+    local etc_ssh="${NODE_SSH_ETC_SSH:-/etc/ssh}"
+    local validity="${NODE_SSH_CERT_VALIDITY:-10m}"
+    local key_id="${HOSTNAME:-noded}"
+    local ca_pub="$etc_ssh/flex_debug_user_ca.pub"
+    local conf="$etc_ssh/sshd_config.d/50-flex-debug.conf"
+
+    [ -d "$etc_ssh/sshd_config.d" ] ||
+        die "no ${etc_ssh}/sshd_config.d — hostPath-mount the node's /etc/ssh read-write" \
+            "and the host sshd_config must Include sshd_config.d/*.conf (Ubuntu default)"
+    # Probe with a real write rather than [ -w ]: this runs as root, which
+    # bypasses permission bits, and a read-only bind mount only refuses at
+    # write time (EROFS) regardless of the mode shown.
+    local probe="$etc_ssh/sshd_config.d/.noded-write-test.$$"
+    if ! (: > "$probe") 2>/dev/null; then
+        die "${etc_ssh}/sshd_config.d is not writable" \
+            "the hostPath mount must be read-write for self-provisioning"
+    fi
+    rm -f "$probe"
+
+    ssh-keygen -q -t ed25519 -N '' -f "$workdir/user_ca" -C flex-debug-user-ca
+
+    # Stable filenames: a restart replaces the trust rather than accumulating it.
+    install -m 0644 "$workdir/user_ca.pub" "$ca_pub"
+    published_ca="$ca_pub"
+    printf '# managed by noded self-provisioning; removed on graceful stop\nTrustedUserCAKeys %s\n' \
+        "$ca_pub" > "$conf"
+    published_conf="$conf"
+    echo "noded: published runtime CA trust to ${conf}" >&2
+
+    ssh-keygen -q -t ed25519 -N '' -f "$workdir/id" -C flex-debug-client
+    ssh-keygen -q -s "$workdir/user_ca" -I "$key_id" -n "$principal" -V "+$validity" \
+        "$workdir/id.pub"
+
+    key_file="$workdir/id"
+    cert_file="$workdir/id-cert.pub"
+}
+
+if [ -n "${NODE_SSH_PROVISION:-}" ]; then
+    provision_via_etc_ssh
+elif [ -n "$cert_file" ]; then
     [ -r "$cert_file" ] || die "certificate not readable at ${cert_file}"
     [ -r "$key_file" ] || die "NODE_SSH_CERT_FILE is set but no key at ${key_file}"
     cert_file="$(stage_private_file "$cert_file" cert.pub)"
