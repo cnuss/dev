@@ -1,4 +1,7 @@
-ARG BASE_IMAGE=ubuntu:latest
+# Pinned rather than :latest. The weekly no-cache rebuild would otherwise pull
+# major Ubuntu releases unreviewed — 24.04 -> 26.04 already swapped GNU
+# coreutils for uutils this way. Bump this deliberately.
+ARG BASE_IMAGE=ubuntu:26.04
 FROM anchore/syft:latest AS syft
 
 FROM ${BASE_IMAGE} AS homebrew
