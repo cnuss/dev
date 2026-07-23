@@ -97,6 +97,9 @@ jobs:
   smoke-amd:
     needs: build-amd
     runs-on: ubuntu-24.04
+    # A hung smoke (e.g. noded holding on a failure) must fail fast, not sit for
+    # the 6h default and block the run.
+    timeout-minutes: 10
     container:
       image: ghcr.io/${{ github.repository }}:amd-sha-${{ github.sha }}
       credentials:
@@ -121,6 +124,7 @@ jobs:
   smoke-arm:
     needs: build-arm
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     container:
       image: ghcr.io/${{ github.repository }}:arm-sha-${{ github.sha }}
       credentials:
@@ -273,6 +277,7 @@ jobs:
   verify:
     needs: push
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     container:
       image: ${{ github.repository }}:latest
     steps:
