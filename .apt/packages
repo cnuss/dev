@@ -26,6 +26,7 @@ telnet
 tftp-hpa
 traceroute
 unzip
+util-linux
 vim-tiny
 wget
 xz-utils

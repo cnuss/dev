@@ -82,6 +82,18 @@ As with FRR, these ship as binaries only — no baked credentials, no daemon sta
 
 BGP speaking and route programming require `NET_ADMIN` + `NET_RAW` capabilities in the pod `securityContext` — a runtime concern, not baked into the image.
 
+### Namespaces / Process Debugging
+
+`nsenter`, `unshare`, `lsns`, `mount`, `findmnt` (from `util-linux`)
+
+Entering another container's namespaces needs `hostPID: true` plus `privileged: true` in the pod spec — or at minimum `CAP_SYS_ADMIN` and `CAP_SYS_PTRACE`:
+
+```bash
+nsenter --target 1 --mount --uts --ipc --net --pid -- ip addr
+```
+
+`util-linux` is `Essential` in the Ubuntu base, but it's pinned in `.apt/packages` and smoke-tested so a slimmer `BASE_IMAGE` can't silently drop it.
+
 ### General
 
 `git`, `zsh`, `vim`, `less`, `busybox`, `tar`, `gzip`, `bzip2`, `xz`, `unzip`, `sudo`
@@ -109,3 +121,7 @@ The Dockerfile uses a multi-stage build:
 ## CI/CD
 
 Pushes to the `latest` branch build and publish multi-arch images to both Docker Hub and GHCR, followed by smoke tests against the published image. The workflow also extracts the image SBOMs, submits them to the GitHub dependency graph, and attests the SBOM for the GHCR image.
+
+The same workflow runs on a weekly schedule (Mondays 06:00 UTC) to pick up base image and package updates. Scheduled runs execute on the default branch, so they publish exactly like a push, and they build with `no-cache` — a cached rebuild would reinstall the identical packages and defeat the purpose. Expect them to take noticeably longer than a normal push build.
+
+GitHub disables scheduled workflows in repos with no activity for 60 days; re-enable from the Actions tab if that happens.

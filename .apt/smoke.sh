@@ -13,3 +13,6 @@ nmap --version
 ncat --version
 socat -V
 bgpq4 -v
+nsenter --version
+unshare --version
+lsns --version
