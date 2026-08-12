@@ -124,6 +124,25 @@ The Dockerfile uses a multi-stage build:
 6. **smoke-test** - Validates all tools work
 7. **final** - Clean single-layer output image; `/bin/zsh` is the build `SHELL`, and the default `CMD` is `sleep infinity` so the container idles for `kubectl exec` / `docker exec` instead of exiting
 
+## Network Sandbox
+
+**[sandbox/](sandbox/)** runs this image with the same network confinement as
+Claude Code's hosted environment: the container sits on an `internal: true`
+network with no route off the host, and its only peer is an allowlisting
+`CONNECT` proxy that re-terminates TLS with its own CA.
+
+```bash
+cd sandbox
+docker compose up -d
+docker compose exec dev sandbox-verify   # assert the boundary holds
+docker compose exec dev zsh
+```
+
+Egress policy is `sandbox/allowlist.txt`, re-read live; denials are explained
+at `http://proxy:8081/status`. `SANDBOX_IMAGE` confines any other image the
+same way. See **[sandbox/README.md](sandbox/README.md)** for the DNS caveat and
+the list of protocols a `CONNECT` proxy cannot carry.
+
 ## CI/CD
 
 Pushes to the `latest` branch build and publish multi-arch images to both Docker Hub and GHCR, followed by smoke tests against the published image. The workflow also extracts the image SBOMs, submits them to the GitHub dependency graph, and attests the SBOM for the GHCR image.

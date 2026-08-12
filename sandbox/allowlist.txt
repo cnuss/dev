@@ -1,0 +1,44 @@
+# Hosts the sandbox may reach. Everything else gets 403 at CONNECT.
+#
+#   example.com    exact host only
+#   .example.com   the domain and every subdomain
+#   *.example.com  same as .example.com
+#
+# Edited live: the proxy re-reads this file on mtime change, no restart needed.
+# Check what is loaded, and why something was denied:
+#   curl -s --noproxy '*' http://proxy:8081/status | jq
+
+# --- package registries -----------------------------------------------------
+registry.npmjs.org
+pypi.org
+files.pythonhosted.org
+index.crates.io
+static.crates.io
+proxy.golang.org
+sum.golang.org
+jsr.io
+npm.jsr.io
+
+# --- distro archives --------------------------------------------------------
+.ubuntu.com
+.debian.org
+.alpinelinux.org
+
+# --- source hosting ---------------------------------------------------------
+.github.com
+.githubusercontent.com
+.githubassets.com
+codeload.github.com
+
+# --- container registries ---------------------------------------------------
+.docker.io
+.docker.com
+ghcr.io
+.pkg.dev
+
+# --- anthropic --------------------------------------------------------------
+.anthropic.com
+statsig.anthropic.com
+
+# --- used by sandbox-verify -------------------------------------------------
+example.com

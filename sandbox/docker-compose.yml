@@ -1,0 +1,131 @@
+name: dev-sandbox
+
+# A network sandbox that mirrors how Claude Code's remote environment is wired:
+#
+#   [ dev ] --(internal, no route out)--> [ proxy ] --(bridge, NAT)--> internet
+#
+# The workload sits on an `internal: true` network, so Docker programs no
+# default route and no NAT rule for it — raw IP egress is impossible, not
+# merely discouraged. The only reachable thing is the proxy, which speaks
+# HTTP CONNECT, terminates TLS with its own CA, and refuses any host that is
+# not in allowlist.txt.
+
+x-sandbox-noproxy: &noproxy "localhost,127.0.0.1,::1,127.0.0.0/8,proxy,host.docker.internal,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
+x-sandbox-proxy: &proxy-url "http://proxy:8080"
+
+services:
+  # One-shot: mints the proxy CA into the shared `certs` volume and builds the
+  # ca-bundle.crt that the workload's tools point at (public roots + this CA,
+  # so no_proxy destinations keep verifying normally). Idempotent — an existing
+  # CA is left alone, so restarting the stack does not invalidate a trust store
+  # you already installed somewhere.
+  ca:
+    build:
+      context: ./ca
+      args:
+        ALPINE_IMAGE: ${SANDBOX_ALPINE_IMAGE:-alpine:3.24}
+    environment:
+      CA_CN: ${SANDBOX_CA_CN:-dev-sandbox egress proxy CA}
+      CA_DAYS: ${SANDBOX_CA_DAYS:-3650}
+      # uid the mitmproxy image runs as; the CA private key is chowned to it.
+      PROXY_UID: ${SANDBOX_PROXY_UID:-1000}
+    volumes:
+      - certs:/certs
+    # Needs no connectivity at all; placed on the internal network only so
+    # compose does not spin up a default bridge for it.
+    networks:
+      - sandbox
+    restart: "no"
+
+  # The policy enforcement point. Two legs: `sandbox` (where the workload can
+  # reach it) and `egress` (where it can reach the internet).
+  proxy:
+    build:
+      context: ./proxy
+      args:
+        MITMPROXY_IMAGE: ${SANDBOX_MITMPROXY_IMAGE:-mitmproxy/mitmproxy:12.2.3}
+    depends_on:
+      ca:
+        condition: service_completed_successfully
+    environment:
+      SANDBOX_ALLOWLIST: /etc/sandbox/allowlist.txt
+      # Ports the proxy will CONNECT to. Everything else is refused, matching
+      # the "non-443 HTTPS ports are not supported" rule upstream.
+      SANDBOX_ALLOWED_PORTS: ${SANDBOX_ALLOWED_PORTS:-443}
+      # Plain-HTTP (non-CONNECT, absolute-form) proxy requests get 405, the
+      # same way the real proxy rejects HTTP_PROXY-configured clients.
+      SANDBOX_ALLOW_PLAIN_HTTP: ${SANDBOX_ALLOW_PLAIN_HTTP:-0}
+    volumes:
+      - certs:/certs
+      - ./allowlist.txt:/etc/sandbox/allowlist.txt:ro
+    networks:
+      sandbox:
+        ipv4_address: 172.31.240.10
+      egress:
+    restart: unless-stopped
+
+  # The sandboxed workload. Note it joins `sandbox` only.
+  dev:
+    build:
+      context: ./workload
+      args:
+        SANDBOX_IMAGE: ${SANDBOX_IMAGE:-cnuss/dev}
+    depends_on:
+      proxy:
+        condition: service_healthy
+    environment:
+      HTTPS_PROXY: *proxy-url
+      https_proxy: *proxy-url
+      NO_PROXY: *noproxy
+      no_proxy: *noproxy
+      # Deliberately no HTTP_PROXY: only HTTPS_PROXY is served, and clients
+      # that fall back to plain HTTP should fail loudly rather than silently
+      # bypass the CONNECT path.
+      CURL_CA_BUNDLE: /certs/ca-bundle.crt
+      SSL_CERT_FILE: /certs/ca-bundle.crt
+      REQUESTS_CA_BUNDLE: /certs/ca-bundle.crt
+      NODE_EXTRA_CA_CERTS: /certs/ca-bundle.crt
+      PIP_CERT: /certs/ca-bundle.crt
+      AWS_CA_BUNDLE: /certs/ca-bundle.crt
+      GIT_SSL_CAINFO: /certs/ca-bundle.crt
+      CARGO_HTTP_CAINFO: /certs/ca-bundle.crt
+      DENO_CERT: /certs/ca-bundle.crt
+      NIX_SSL_CERT_FILE: /certs/ca-bundle.crt
+      HTTPLIB2_CA_CERTS: /certs/ca-bundle.crt
+      BUNDLE_SSL_CA_CERT: /certs/ca-bundle.crt
+      npm_config_https_proxy: *proxy-url
+      npm_config_noproxy: *noproxy
+      YARN_HTTPS_PROXY: *proxy-url
+      GLOBAL_AGENT_HTTPS_PROXY: *proxy-url
+      GLOBAL_AGENT_NO_PROXY: *noproxy
+    volumes:
+      - certs:/certs:ro
+      - work:/work
+    working_dir: /work
+    networks:
+      - sandbox
+    # Strict-DNS mode: uncomment both lines to black-hole the sandbox's
+    # resolver so it cannot even look up public names (see README, "DNS").
+    # dns: ["127.0.0.1"]
+    # extra_hosts: ["proxy:172.31.240.10"]
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    # The image idles on `sleep infinity`; exec into it.
+    stdin_open: true
+    tty: true
+
+networks:
+  # No gateway, no NAT, no route off-host. This is the sandbox boundary.
+  sandbox:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.240.0/24
+  egress:
+    driver: bridge
+
+volumes:
+  certs:
+  work:
