@@ -137,10 +137,12 @@ docker compose exec dev sandbox-verify   # assert the boundary holds
 docker compose exec dev zsh
 ```
 
-Egress policy is `sandbox/allowlist.txt`, re-read live; denials are explained
-at `http://proxy:8081/status`. See **[sandbox/README.md](sandbox/README.md)**
-for the knobs, the DNS caveat, and the list of protocols a `CONNECT` proxy
-cannot carry.
+Egress policy is `sandbox/allowlist.txt`, re-read live. The same list governs
+name resolution — the proxy is the sandbox's only reachable DNS server and
+answers NXDOMAIN for anything unlisted, so there is no lookup path out either.
+Denials are explained at `http://proxy:8081/status`. See
+**[sandbox/README.md](sandbox/README.md)** for the knobs and the list of
+protocols a `CONNECT` proxy cannot carry.
 
 ## CI/CD
 

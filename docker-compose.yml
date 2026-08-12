@@ -62,8 +62,13 @@ services:
     volumes:
       - certs:/certs
       - ./sandbox/allowlist.txt:/etc/sandbox/allowlist.txt:ro
+    # mitmproxy runs as a non-root user and has to bind :53 for the resolver.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
     networks:
       sandbox:
+        # Pinned: the workload's /etc/resolv.conf and /etc/hosts point here by
+        # address, so neither depends on Docker's embedded resolver.
         ipv4_address: 172.31.240.10
       egress:
     restart: unless-stopped
@@ -115,6 +120,10 @@ services:
       YARN_HTTPS_PROXY: *proxy-url
       GLOBAL_AGENT_HTTPS_PROXY: *proxy-url
       GLOBAL_AGENT_NO_PROXY: *noproxy
+      # The entrypoint rewrites /etc/resolv.conf to this address, so the only
+      # resolver the workload can reach is the allowlist-filtering one on the
+      # proxy. Nothing here talks to Docker's embedded DNS.
+      SANDBOX_RESOLVER: 172.31.240.10
     volumes:
       - certs:/certs:ro
       - ./sandbox/entrypoint.sh:/usr/local/bin/sandbox-entrypoint:ro
@@ -123,10 +132,11 @@ services:
     working_dir: /work
     networks:
       - sandbox
-    # Strict-DNS mode: uncomment both lines to black-hole the sandbox's
-    # resolver so it cannot even look up public names (see sandbox/README.md).
-    # dns: ["127.0.0.1"]
-    # extra_hosts: ["proxy:172.31.240.10"]
+    # `proxy` resolves from /etc/hosts, so HTTPS_PROXY keeps working after the
+    # entrypoint points /etc/resolv.conf at the filtering resolver — service
+    # discovery never has to survive the switch.
+    extra_hosts:
+      - "proxy:172.31.240.10"
     security_opt:
       - no-new-privileges:true
     init: true

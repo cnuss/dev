@@ -1,21 +1,34 @@
 """Allowlist-enforcing egress policy for the compose sandbox.
 
-Loaded into mitmdump as an addon. Three rules, matching how the hosted
-environment's egress proxy behaves:
+Loaded into mitmdump as an addon. One allowlist governs two tiers:
 
-* CONNECT to a host that is not in the allowlist -> 403, connection aborted
-  before mitmproxy dials upstream.
-* CONNECT to a port outside SANDBOX_ALLOWED_PORTS -> 403.
-* A plain-HTTP, absolute-form proxy request (i.e. a client configured with
-  HTTP_PROXY rather than HTTPS_PROXY) -> 405, unless SANDBOX_ALLOW_PLAIN_HTTP=1.
+Traffic (regular proxy mode)
+  * CONNECT to a host that is not in the allowlist -> 403, connection aborted
+    before mitmproxy dials upstream.
+  * CONNECT to a port outside SANDBOX_ALLOWED_PORTS -> 403.
+  * A plain-HTTP, absolute-form proxy request (i.e. a client configured with
+    HTTP_PROXY rather than HTTPS_PROXY) -> 405, unless
+    SANDBOX_ALLOW_PLAIN_HTTP=1.
+
+Names (DNS mode)
+  * The sandbox has no route to any resolver, so this is the only one it can
+    reach. A query for a name that is not in the allowlist is answered
+    NXDOMAIN locally and never leaves the box.
+
+Filtering DNS is what closes the exfiltration channel: a query for
+`<secrets>.attacker.example` cannot be smuggled out as a lookup, because a
+name has to be on the allowlist before the resolver will forward it at all.
+NXDOMAIN rather than REFUSED so glibc fails fast and definitively ("Name or
+service not known") instead of retrying and reporting a temporary failure.
 
 The allowlist is re-read whenever the file's mtime changes, so editing
 allowlist.txt takes effect without a restart.
 
 A read-only status endpoint mirroring the hosted proxy's /__agentproxy/status
 is served on SANDBOX_STATUS_PORT; it reports the active rules and the most
-recent denials, which is the fast way to find out why a request failed (the
-403 body never reaches curl on a failed CONNECT).
+recent denials, which is the fast way to find out why something failed (the
+403 body never reaches curl on a failed CONNECT, and a resolver reports only
+"not found").
 """
 
 from __future__ import annotations
@@ -28,7 +41,9 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from mitmproxy import dns
 from mitmproxy import http
+from mitmproxy.net.dns import response_codes
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +53,12 @@ ALLOW_PLAIN_HTTP = os.environ.get("SANDBOX_ALLOW_PLAIN_HTTP", "0") == "1"
 ALLOWED_PORTS = frozenset(
     int(p) for p in os.environ.get("SANDBOX_ALLOWED_PORTS", "443").replace(",", " ").split()
 )
+
+# The container healthcheck resolves this every few seconds to prove the DNS
+# listener and this addon are both live. It is refused like anything else, but
+# kept out of the counters so it cannot crowd real denials out of the ring
+# buffer — 50 entries would otherwise be four minutes of healthchecks.
+HEALTHCHECK_NAME = "healthcheck.sandbox.invalid"
 
 
 def parse_rules(path: str) -> list[str]:
@@ -78,6 +99,8 @@ class SandboxEgress:
         self.denials: collections.deque[dict] = collections.deque(maxlen=50)
         self.allowed_count = 0
         self.denied_count = 0
+        self.dns_allowed_count = 0
+        self.dns_denied_count = 0
         self.status_thread: threading.Thread | None = None
 
     # -- lifecycle ---------------------------------------------------------
@@ -154,7 +177,36 @@ class SandboxEgress:
         if match_rule(host, rules) is None:
             self._deny(flow, host, flow.request.port, "not-in-allowlist", 403)
 
-    def _deny(self, flow: http.HTTPFlow, host: str, port: int, reason: str, status: int) -> None:
+    # -- DNS ---------------------------------------------------------------
+
+    def dns_request(self, flow: dns.DNSFlow) -> None:
+        # The sandbox network has no route to any other resolver, so every
+        # lookup the workload makes arrives here. Anything not on the allowlist
+        # is answered locally and never reaches an upstream server.
+        if flow.response is not None:
+            return
+
+        self.refresh()
+        with self.lock:
+            rules = self.rules
+
+        for question in flow.request.questions:
+            name = question.name
+            if match_rule(name, rules) is None:
+                if name.lower().rstrip(".") != HEALTHCHECK_NAME:
+                    self._record(name, 53, "dns-not-in-allowlist", "NXDOMAIN")
+                    with self.lock:
+                        self.dns_denied_count += 1
+                    logger.warning(f"sandbox: DENY dns {name} -> NXDOMAIN")
+                flow.response = flow.request.fail(response_codes.NXDOMAIN)
+                return
+
+        with self.lock:
+            self.dns_allowed_count += 1
+
+    # -- shared ------------------------------------------------------------
+
+    def _record(self, host: str, port: int, reason: str, status: object) -> None:
         with self.lock:
             self.denied_count += 1
             self.denials.appendleft(
@@ -166,6 +218,9 @@ class SandboxEgress:
                     "status": status,
                 }
             )
+
+    def _deny(self, flow: http.HTTPFlow, host: str, port: int, reason: str, status: int) -> None:
+        self._record(host, port, reason, status)
         logger.warning(f"sandbox: DENY {host}:{port} ({reason}) -> {status}")
         flow.response = http.Response.make(
             status,
@@ -184,6 +239,7 @@ class SandboxEgress:
             return {
                 "enabled": True,
                 "listenPort": int(os.environ.get("SANDBOX_LISTEN_PORT", "8080")),
+                "dnsPort": int(os.environ.get("SANDBOX_DNS_PORT", "53")),
                 "statusPort": STATUS_PORT,
                 "allowlistPath": ALLOWLIST_PATH,
                 "allowlist": list(self.rules),
@@ -193,6 +249,8 @@ class SandboxEgress:
                 "caBundlePath": "/certs/ca-bundle.crt",
                 "allowedRequests": self.allowed_count,
                 "deniedRequests": self.denied_count,
+                "dnsAllowedQueries": self.dns_allowed_count,
+                "dnsDeniedQueries": self.dns_denied_count,
                 "recentDenials": list(self.denials),
             }
 

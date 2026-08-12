@@ -11,16 +11,20 @@ refuses any host that is not on an allowlist.
    │     dev      │ ─────── no default route, no NAT ────► │    proxy     │
    │ ./Dockerfile │        the only reachable peer         │  mitmproxy   │
    └──────────────┘                                        └──────┬───────┘
-      HTTPS_PROXY=http://proxy:8080                                │ egress (bridge)
-      SSL_CERT_FILE=/certs/ca-bundle.crt                           ▼
-                                                              allowlist.txt
-                                                            everything else 403
+      HTTPS_PROXY=http://proxy:8080          :8080 CONNECT        │ egress (bridge)
+      nameserver 172.31.240.10               :53    DNS           ▼
+      SSL_CERT_FILE=/certs/ca-bundle.crt                     allowlist.txt
+                                                       everything else 403 / NXDOMAIN
 ```
 
 The confinement is structural, not advisory. `sandbox` is an `internal: true`
 network, so Docker programs no gateway and no masquerade rule for it — a
 process in `dev` cannot send an IP packet off the host even if it ignores every
 proxy variable, drops the CA, or runs as root.
+
+One allowlist governs both tiers. A host that is not on it cannot be connected
+to *and cannot be resolved*, which is what keeps a lookup for
+`<secrets>.attacker.example` from being a way out.
 
 ## Quick start
 
@@ -66,8 +70,11 @@ docker compose exec dev curl -s --noproxy '*' http://proxy:8081/status | jq
   "allowlist": [".github.com", "pypi.org", "..."],
   "allowedPorts": [443],
   "deniedRequests": 3,
+  "dnsAllowedQueries": 41,
+  "dnsDeniedQueries": 2,
   "recentDenials": [
-    {"time": "...", "host": "example.org", "port": 443, "reason": "not-in-allowlist", "status": 403}
+    {"time": "...", "host": "example.org", "port": 443, "reason": "not-in-allowlist", "status": 403},
+    {"time": "...", "host": "exfil.example.net", "port": 53, "reason": "dns-not-in-allowlist", "status": "NXDOMAIN"}
   ]
 }
 ```
@@ -87,6 +94,31 @@ The CA is minted once by the `ca` service into a shared volume and reused
 across restarts, so a trust store you built by hand does not go stale. The
 private key lives in the volume — this is a development sandbox, not a
 production egress tier.
+
+## Where this deliberately differs
+
+The hosted environment enforces policy with a **transparent** egress gateway:
+outbound TCP/443 is intercepted regardless of client configuration, and the
+gateway mints a leaf for whatever SNI is presented (issuer `O = Anthropic,
+CN = Egress Gateway SDS Issuing CA`). `HTTPS_PROXY` there is a convenience for
+tools that honour it, not the boundary. Its DNS is unrestricted — UDP/53 to any
+resolver works.
+
+This stack inverts both:
+
+| | hosted | here |
+|---|---|---|
+| Boundary | transparent interception of :443 | `internal: true`, no route at all |
+| Proxy-unaware clients | silently intercepted, still work | fail to connect |
+| DNS | open to any resolver | one filtered resolver, allowlist-scoped |
+
+The `internal: true` boundary is the stronger of the two — nothing escapes it,
+including protocols the gateway never sees. The cost is that a client ignoring
+`HTTPS_PROXY` (see below) breaks instead of being caught. Adding transparent
+capture on top would need the proxy container to become the sandbox's default
+gateway, with `NET_ADMIN`, `ip_forward`, and an iptables `REDIRECT` of :443 to
+a second `--mode transparent` listener. Worth doing if proxy-unaware tooling
+matters more than the simplicity; it is not wired up here.
 
 ## Configuration
 
@@ -116,21 +148,37 @@ any image with a shell. Debian/Ubuntu bases also get the CA in the system trust
 store; elsewhere the `*_CA_BUNDLE` variables still apply and the entrypoint
 says so rather than failing.
 
+## How DNS is confined
+
+Docker's embedded resolver (127.0.0.11) forwards misses to the daemon's own
+nameservers, and that keeps working on an `internal` network — so by default a
+sandboxed container cannot *reach* the internet but can still *query* it. No
+data path for ordinary traffic, but a fine exfiltration channel.
+
+The entrypoint closes it by overwriting `/etc/resolv.conf` with a single
+`nameserver 172.31.240.10`, the proxy's own address. From then on:
+
+* The embedded resolver is out of the picture entirely.
+* The only reachable DNS server is on the sandbox network, and it filters
+  against the same `allowlist.txt` — a name that is not listed is answered
+  NXDOMAIN locally and no query ever leaves.
+* `proxy` still resolves, because compose puts it in `/etc/hosts` (`extra_hosts`)
+  and nsswitch reads `files` before `dns`. Service discovery never has to
+  survive the switch.
+* Actual resolution happens on the proxy's egress leg — which is what
+  `CLAUDE_CODE_PROXY_RESOLVES_HOSTS=true` means in the hosted environment.
+
+NXDOMAIN rather than REFUSED so glibc fails fast and unambiguously ("Name or
+service not known") instead of retrying and reporting a temporary failure.
+`sandbox-verify` asserts all of it, including that an invented name under an
+unlisted domain does not resolve.
+
+One consequence worth knowing: a host is unreachable *and* unresolvable until
+it is on the allowlist, so a missing entry now shows up as a DNS failure rather
+than a 403. `/status` reports both — check `recentDenials` for a
+`dns-not-in-allowlist` reason before assuming the network is broken.
+
 ## Known gaps
-
-**DNS.** Docker's embedded resolver (127.0.0.11) forwards queries via the
-daemon on the host, so a container on an `internal` network can still *resolve*
-public names even though it cannot reach them. That is no data path for
-ordinary traffic, but it is a DNS-exfiltration channel. To close it, uncomment
-the two lines on the `dev` service:
-
-```yaml
-dns: ["127.0.0.1"]                    # black-hole the resolver
-extra_hosts: ["proxy:172.31.240.10"]  # the one name that still needs to work
-```
-
-Names are then resolved only by the proxy, on its own leg — which is exactly
-what `CLAUDE_CODE_PROXY_RESOLVES_HOSTS=true` means upstream.
 
 **Not proxyable.** By construction this stack cannot carry gRPC/HTTP-2-only
 APIs, WebSocket upgrades, client-mTLS, certificate-pinned clients, or raw TCP

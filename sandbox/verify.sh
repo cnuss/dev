@@ -11,6 +11,7 @@ ALLOWED_HOST=${ALLOWED_HOST:-example.com}
 DENIED_HOST=${DENIED_HOST:-example.org}
 UNRESOLVABLE_HOST=${UNRESOLVABLE_HOST:-blocked.example.invalid}
 PROXY=${HTTPS_PROXY:-http://proxy:8080}
+RESOLVER=${SANDBOX_RESOLVER:-172.31.240.10}
 STATUS_URL=${STATUS_URL:-http://proxy:8081/status}
 
 pass=0
@@ -43,7 +44,44 @@ else
     ok "ICMP off-network fails"
 fi
 
-head_ "2. Allowed traffic goes through the proxy"
+head_ "2. Name resolution is confined to the proxy"
+
+if grep -q "nameserver ${RESOLVER}" /etc/resolv.conf 2>/dev/null; then
+    ok "resolv.conf points only at the proxy ($RESOLVER)"
+else
+    bad "resolv.conf does not point at $RESOLVER" "$(cat /etc/resolv.conf 2>&1)"
+fi
+
+if getent hosts "$ALLOWED_HOST" >/dev/null 2>&1; then
+    ok "$ALLOWED_HOST resolves (allowlisted)"
+else
+    bad "$ALLOWED_HOST does not resolve" "the proxy's resolver should forward this one"
+fi
+
+if getent hosts "$DENIED_HOST" >/dev/null 2>&1; then
+    bad "$DENIED_HOST resolved — the resolver is not filtering"
+else
+    ok "$DENIED_HOST does not resolve (not allowlisted)"
+fi
+
+# The exfiltration case: a made-up label under a domain nobody allowlisted.
+if getent hosts "s3cr3t.exfil.example.net" >/dev/null 2>&1; then
+    bad "an arbitrary name resolved — DNS exfiltration is possible"
+else
+    ok "arbitrary names do not resolve (no DNS exfiltration path)"
+fi
+
+if command -v nslookup >/dev/null 2>&1; then
+    if timeout 6 nslookup "$ALLOWED_HOST" 8.8.8.8 >/dev/null 2>&1; then
+        bad "reached 8.8.8.8 directly — the sandbox can bypass the resolver"
+    else
+        ok "external resolvers are unreachable (no route)"
+    fi
+else
+    printf '  SKIP  no nslookup in this image\n'
+fi
+
+head_ "3. Allowed traffic goes through the proxy"
 
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://$ALLOWED_HOST/" 2>&1)
 if [ "$code" = "200" ] || [ "$code" = "301" ] || [ "$code" = "302" ]; then
@@ -58,7 +96,7 @@ else
     bad "the sandbox CA does not verify the connection" "expected MITM interception"
 fi
 
-head_ "3. Everything else is refused"
+head_ "4. Everything else is refused"
 
 # A refused CONNECT surfaces two ways depending on the curl build: as the
 # tunnel status in %{http_code}, or as "CONNECT tunnel failed, response 403"
@@ -90,7 +128,7 @@ else
     bad "plain HTTP was not refused with 405" "$out"
 fi
 
-head_ "4. Diagnostics"
+head_ "5. Diagnostics"
 
 if curl -sS --noproxy '*' --max-time 5 "$STATUS_URL" >/dev/null 2>&1; then
     ok "proxy status endpoint reachable at $STATUS_URL"
