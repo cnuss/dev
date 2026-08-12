@@ -2,4 +2,8 @@
 .git
 Dockerfile
 README.md
+# The sandbox stack builds this Dockerfile, but none of its own files belong
+# in the image — the smoke-test stage does COPY . .
 sandbox
+docker-compose.yml
+env.example

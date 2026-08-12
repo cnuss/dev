@@ -1,14 +1,17 @@
 name: dev-sandbox
 
-# A network sandbox that mirrors how Claude Code's remote environment is wired:
+# Runs this repo's image under the same network confinement as Claude Code's
+# hosted environment:
 #
 #   [ dev ] --(internal, no route out)--> [ proxy ] --(bridge, NAT)--> internet
 #
-# The workload sits on an `internal: true` network, so Docker programs no
-# default route and no NAT rule for it — raw IP egress is impossible, not
-# merely discouraged. The only reachable thing is the proxy, which speaks
-# HTTP CONNECT, terminates TLS with its own CA, and refuses any host that is
-# not in allowlist.txt.
+# `dev` sits on an `internal: true` network, so Docker programs no default
+# route and no NAT rule for it — raw IP egress is impossible, not merely
+# discouraged. The only reachable peer is the proxy, which speaks HTTP
+# CONNECT, terminates TLS with its own CA, and refuses any host that is not in
+# sandbox/allowlist.txt.
+#
+# Supporting pieces live in sandbox/; see sandbox/README.md.
 
 x-sandbox-noproxy: &noproxy "localhost,127.0.0.1,::1,127.0.0.0/8,proxy,host.docker.internal,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 
@@ -22,7 +25,7 @@ services:
   # you already installed somewhere.
   ca:
     build:
-      context: ./ca
+      context: ./sandbox/ca
       args:
         ALPINE_IMAGE: ${SANDBOX_ALPINE_IMAGE:-alpine:3.24}
     environment:
@@ -42,7 +45,7 @@ services:
   # reach it) and `egress` (where it can reach the internet).
   proxy:
     build:
-      context: ./proxy
+      context: ./sandbox/proxy
       args:
         MITMPROXY_IMAGE: ${SANDBOX_MITMPROXY_IMAGE:-mitmproxy/mitmproxy:12.2.3}
     depends_on:
@@ -58,22 +61,35 @@ services:
       SANDBOX_ALLOW_PLAIN_HTTP: ${SANDBOX_ALLOW_PLAIN_HTTP:-0}
     volumes:
       - certs:/certs
-      - ./allowlist.txt:/etc/sandbox/allowlist.txt:ro
+      - ./sandbox/allowlist.txt:/etc/sandbox/allowlist.txt:ro
     networks:
       sandbox:
         ipv4_address: 172.31.240.10
       egress:
     restart: unless-stopped
 
-  # The sandboxed workload. Note it joins `sandbox` only.
+  # The sandboxed workload: this repo's image, built from ./Dockerfile. Note it
+  # joins `sandbox` only.
+  #
+  # This is the full multi-stage build (homebrew, apt, claude, SBOM) — expect
+  # the first `up` to take a while. `docker compose up -d proxy` first if you
+  # only want the egress tier.
   dev:
     build:
-      context: ./workload
+      context: .
+      dockerfile: Dockerfile
+      target: final
       args:
-        SANDBOX_IMAGE: ${SANDBOX_IMAGE:-cnuss/dev}
+        BASE_IMAGE: ${SANDBOX_BASE_IMAGE:-ubuntu:26.04}
+    image: cnuss/dev:sandbox
     depends_on:
       proxy:
         condition: service_healthy
+    # The image ships no ENTRYPOINT; this one installs the CA into the system
+    # trust store and then runs the normal CMD. Mounted rather than baked so
+    # the published image stays exactly what ./Dockerfile produces.
+    entrypoint: ["/usr/local/bin/sandbox-entrypoint"]
+    command: ["sleep", "infinity"]
     environment:
       HTTPS_PROXY: *proxy-url
       https_proxy: *proxy-url
@@ -101,18 +117,20 @@ services:
       GLOBAL_AGENT_NO_PROXY: *noproxy
     volumes:
       - certs:/certs:ro
+      - ./sandbox/entrypoint.sh:/usr/local/bin/sandbox-entrypoint:ro
+      - ./sandbox/verify.sh:/usr/local/bin/sandbox-verify:ro
       - work:/work
     working_dir: /work
     networks:
       - sandbox
     # Strict-DNS mode: uncomment both lines to black-hole the sandbox's
-    # resolver so it cannot even look up public names (see README, "DNS").
+    # resolver so it cannot even look up public names (see sandbox/README.md).
     # dns: ["127.0.0.1"]
     # extra_hosts: ["proxy:172.31.240.10"]
     security_opt:
       - no-new-privileges:true
     init: true
-    # The image idles on `sleep infinity`; exec into it.
+    # The command idles; exec into it.
     stdin_open: true
     tty: true
 

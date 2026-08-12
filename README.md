@@ -126,22 +126,21 @@ The Dockerfile uses a multi-stage build:
 
 ## Network Sandbox
 
-**[sandbox/](sandbox/)** runs this image with the same network confinement as
+`docker-compose.yml` runs this image with the same network confinement as
 Claude Code's hosted environment: the container sits on an `internal: true`
 network with no route off the host, and its only peer is an allowlisting
 `CONNECT` proxy that re-terminates TLS with its own CA.
 
 ```bash
-cd sandbox
-docker compose up -d
+docker compose up -d                     # builds ./Dockerfile — not quick
 docker compose exec dev sandbox-verify   # assert the boundary holds
 docker compose exec dev zsh
 ```
 
 Egress policy is `sandbox/allowlist.txt`, re-read live; denials are explained
-at `http://proxy:8081/status`. `SANDBOX_IMAGE` confines any other image the
-same way. See **[sandbox/README.md](sandbox/README.md)** for the DNS caveat and
-the list of protocols a `CONNECT` proxy cannot carry.
+at `http://proxy:8081/status`. See **[sandbox/README.md](sandbox/README.md)**
+for the knobs, the DNS caveat, and the list of protocols a `CONNECT` proxy
+cannot carry.
 
 ## CI/CD
 
