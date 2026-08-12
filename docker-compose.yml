@@ -177,17 +177,21 @@ networks:
   # which is exactly the traffic a transparent gateway exists to intercept.
   # The two features cannot coexist.
   #
-  # enable_ip_masquerade=false gets the confinement a different way: the subnet
-  # is routable to the proxy container, but Docker adds no NAT rule for it, so
-  # nothing sourced from 172.31.240.0/24 can reach the internet by any route.
-  # Even a root process in `dev` that restores the Docker gateway as its
-  # default route gets packets forwarded with an unroutable private source and
-  # no return path. The proxy reaches the internet over `egress`, which is a
-  # normal NAT'd bridge.
+  # So the subnet has to be routable, and what keeps traffic on the proxy is
+  # the routing: `dev` has exactly one default route and it points there.
   #
-  # To trade capture back for a hard boundary: set SANDBOX_TRANSPARENT=0 and
-  # restore `internal: true` here. Proxy-unaware clients then break instead of
-  # being intercepted.
+  # enable_ip_masquerade=false hardens that on native Linux — Docker adds no
+  # NAT rule for the subnet, so a root process that deliberately reroutes via
+  # the bridge gateway gets an unroutable private source and no return path.
+  # It buys nothing on Docker Desktop, whose VM masquerades everything leaving
+  # it regardless. Harmless either way; sandbox-verify reports which case you
+  # are in. Note the hosted environment has no such protection at all — its
+  # egress is a filter, and raw TCP to arbitrary IPs works there.
+  #
+  # If confinement matters more than fidelity: set SANDBOX_TRANSPARENT=0 and
+  # restore `internal: true` here. Nothing off-subnet can then leave the bridge
+  # at all, at the cost of proxy-unaware clients breaking instead of being
+  # intercepted.
   sandbox:
     driver: bridge
     driver_opts:

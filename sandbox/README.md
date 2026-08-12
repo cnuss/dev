@@ -19,15 +19,20 @@ with its own CA, and applies whatever `allowlist.txt` says.
 
 Two things are true at once:
 
-**The boundary is structural.** The `sandbox` network is created with
-`enable_ip_masquerade=false`, so Docker adds no NAT rule for `172.31.240.0/24`.
-Nothing sourced from that subnet can reach the internet by any route — not even
-a root process in `dev` that deletes the proxy route and restores the bridge
-gateway, because its packets get forwarded with an unroutable private source
-and no return path. The proxy itself reaches the internet over `egress`, a
-separate NAT'd bridge, and forwards nothing: `FORWARD` policy is `DROP` and no
-`MASQUERADE` rule is ever added, so every sandbox packet either lands on a
-listener inside the proxy or dies there.
+**Everything routes through the proxy.** `dev` has exactly one default route
+and it points at the proxy, which forwards nothing: `FORWARD` policy is `DROP`
+and no `MASQUERADE` rule is ever added, so a sandbox packet either lands on one
+of its listeners or dies there. That is what makes ICMP and uncaptured ports
+dead ends. The proxy reaches the internet over `egress`, a separate NAT'd
+bridge.
+
+The network is created with `enable_ip_masquerade=false`, which on native Linux
+also makes a *deliberate* reroute pointless — no NAT rule for the subnet means
+an unroutable private source and no return path. On Docker Desktop it buys
+nothing, because the VM masquerades everything leaving it regardless of the
+per-bridge setting. `sandbox-verify` reports which case you are in, as a `WARN`
+rather than a failure: the hosted environment offers no protection here either.
+Its egress is a filter, and raw TCP to arbitrary IPs works.
 
 **Capture is transparent.** `:80`, `:443` and `:53` are `REDIRECT`ed onto
 mitmproxy regardless of client configuration, so a client that ignores
@@ -243,10 +248,12 @@ punched deliberately, not worked around.
 
 **Capabilities.** Transparent capture costs `NET_ADMIN` on both containers —
 the proxy programs the redirect, `dev` replaces its own default route. A root
-process in `dev` can therefore tear down its routing and route around the
-proxy. That is a denial of service against itself, not an escape: with no NAT
-for the subnet there is nowhere else to go. `sandbox-verify` tests exactly this
-by adding a route via the bridge gateway and confirming it is a dead end.
+process in `dev` can therefore rewrite its routing and go around the proxy. On
+native Linux that is a dead end (no NAT for the subnet); on Docker Desktop it
+reaches the internet, and `sandbox-verify` says so. This confines a workload,
+not an adversary with root inside it. For that, `SANDBOX_TRANSPARENT=0` plus
+`internal: true` is the only airtight configuration here — and it gives up
+capture.
 
 **Scope.** This confines the network only. Filesystem and syscalls are stock
 Docker defaults — this image deliberately ships `tcpdump`, `nmap`, and
