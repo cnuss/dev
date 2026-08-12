@@ -52,6 +52,23 @@ else
     bad "default route does not go via $GATEWAY" "$(ip route show default 2>&1)"
 fi
 
+# The network is routable (it has to be, for capture to work), so the
+# confinement rests on there being no NAT for this subnet. Route around the
+# proxy to the bridge gateway and confirm it is a dead end.
+if ! command -v ip >/dev/null 2>&1 || ! command -v nc >/dev/null 2>&1; then
+    skip_ "need iproute2 and netcat to test the no-NAT property"
+else
+    bridge_gw=$(echo "$GATEWAY" | sed 's/\.[0-9]*$/.1/')
+    ip route add 1.1.1.1/32 via "$bridge_gw" 2>/dev/null || true
+    if timeout 8 nc -z -w 5 1.1.1.1 443 >/dev/null 2>&1; then
+        bad "reached the internet via the bridge gateway $bridge_gw" \
+            "the sandbox subnet is being masqueraded — check enable_ip_masquerade"
+    else
+        ok "routing around the proxy is a dead end (no NAT for this subnet)"
+    fi
+    ip route del 1.1.1.1/32 via "$bridge_gw" 2>/dev/null || true
+fi
+
 # ICMP is dropped in the hosted environment too — nothing off-host answers.
 if ping -c1 -W3 8.8.8.8 >/dev/null 2>&1; then
     bad "ICMP to 8.8.8.8 succeeded — the hosted environment drops it"

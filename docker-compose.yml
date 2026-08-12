@@ -3,13 +3,12 @@ name: dev-sandbox
 # Runs this repo's image under the same network confinement as Claude Code's
 # hosted environment:
 #
-#   [ dev ] --(internal, no route out)--> [ proxy ] --(bridge, NAT)--> internet
+#   [ dev ] --(routable, no NAT)--> [ proxy ] --(bridge, NAT)--> internet
 #
-# `dev` sits on an `internal: true` network, so Docker programs no default
-# route and no NAT rule for it — raw IP egress is impossible, not merely
-# discouraged. The only reachable peer is the proxy, which speaks HTTP
-# CONNECT, terminates TLS with its own CA, and refuses any host that is not in
-# sandbox/allowlist.txt.
+# `dev` routes everything at the proxy, which intercepts :80/:443/:53
+# transparently and forwards nothing else. Docker adds no NAT rule for the
+# sandbox subnet, so there is no path out that does not go through mitmproxy —
+# see the `networks:` block at the bottom for why this is not `internal: true`.
 #
 # Supporting pieces live in sandbox/; see sandbox/README.md.
 
@@ -35,7 +34,7 @@ services:
       PROXY_UID: ${SANDBOX_PROXY_UID:-1000}
     volumes:
       - certs:/certs
-    # Needs no connectivity at all; placed on the internal network only so
+    # Needs no connectivity at all; placed on the sandbox network only so
     # compose does not spin up a default bridge for it.
     networks:
       - sandbox
@@ -83,7 +82,12 @@ services:
         # Pinned: the workload's /etc/resolv.conf and /etc/hosts point here by
         # address, so neither depends on Docker's embedded resolver.
         ipv4_address: 172.31.240.10
+        priority: 10
       egress:
+        # Higher priority wins the proxy's own default route. Without this the
+        # proxy might route its upstream traffic over `sandbox`, which has no
+        # NAT — mitmproxy would be unable to reach anything.
+        priority: 100
     restart: unless-stopped
 
   # The sandboxed workload: this repo's image, built from ./Dockerfile. Note it
@@ -151,9 +155,10 @@ services:
     # discovery never has to survive the switch.
     extra_hosts:
       - "proxy:172.31.240.10"
-    # To install its own default route. The route leads only to the proxy —
-    # the network is still `internal: true`, so this grants no path out, it
-    # just puts unaware traffic in front of the interceptor.
+    # To replace Docker's default route with one via the proxy, which is what
+    # puts proxy-unaware traffic in front of the interceptor. Grants no path
+    # out: the sandbox subnet is not masqueraded, so routing around the proxy
+    # is a dead end.
     cap_add:
       - NET_ADMIN
     security_opt:
@@ -164,9 +169,29 @@ services:
     tty: true
 
 networks:
-  # No gateway, no NAT, no route off-host. This is the sandbox boundary.
+  # NOT `internal: true`, deliberately, and this is the subtle part.
+  #
+  # `internal` makes Docker program `-i br-X ! -d <subnet> -j DROP` on the host
+  # (libnetwork setupInternalNetworkRules). That drops every packet whose
+  # destination is off-subnet *at the bridge*, before it can reach the proxy —
+  # which is exactly the traffic a transparent gateway exists to intercept.
+  # The two features cannot coexist.
+  #
+  # enable_ip_masquerade=false gets the confinement a different way: the subnet
+  # is routable to the proxy container, but Docker adds no NAT rule for it, so
+  # nothing sourced from 172.31.240.0/24 can reach the internet by any route.
+  # Even a root process in `dev` that restores the Docker gateway as its
+  # default route gets packets forwarded with an unroutable private source and
+  # no return path. The proxy reaches the internet over `egress`, which is a
+  # normal NAT'd bridge.
+  #
+  # To trade capture back for a hard boundary: set SANDBOX_TRANSPARENT=0 and
+  # restore `internal: true` here. Proxy-unaware clients then break instead of
+  # being intercepted.
   sandbox:
-    internal: true
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
     ipam:
       config:
         - subnet: 172.31.240.0/24

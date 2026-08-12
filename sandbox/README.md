@@ -7,7 +7,7 @@ a proxy that intercepts `:80`/`:443`/`:53` transparently, re-terminates TLS
 with its own CA, and applies whatever `allowlist.txt` says.
 
 ```
-   ┌──────────────┐        sandbox (internal: true)        ┌──────────────┐
+   ┌──────────────┐      sandbox (routable, no NAT)        ┌──────────────┐
    │     dev      │ ─── default route, everything ──────►  │    proxy     │
    │ ./Dockerfile │      :80/:443/:53 REDIRECTed           │  mitmproxy   │
    └──────────────┘      the rest dropped                  └──────┬───────┘
@@ -19,12 +19,15 @@ with its own CA, and applies whatever `allowlist.txt` says.
 
 Two things are true at once:
 
-**The boundary is structural.** `sandbox` is an `internal: true` network, so
-Docker programs no gateway and no masquerade rule. The proxy container is the
-sandbox's default route, but it forwards nothing — `FORWARD` policy is `DROP`
-and no `MASQUERADE` rule is ever added. Every packet either lands on a listener
-inside the proxy or dies there. A process in `dev` cannot send an IP packet off
-the host even as root.
+**The boundary is structural.** The `sandbox` network is created with
+`enable_ip_masquerade=false`, so Docker adds no NAT rule for `172.31.240.0/24`.
+Nothing sourced from that subnet can reach the internet by any route — not even
+a root process in `dev` that deletes the proxy route and restores the bridge
+gateway, because its packets get forwarded with an unroutable private source
+and no return path. The proxy itself reaches the internet over `egress`, a
+separate NAT'd bridge, and forwards nothing: `FORWARD` policy is `DROP` and no
+`MASQUERADE` rule is ever added, so every sandbox packet either lands on a
+listener inside the proxy or dies there.
 
 **Capture is transparent.** `:80`, `:443` and `:53` are `REDIRECT`ed onto
 mitmproxy regardless of client configuration, so a client that ignores
@@ -32,6 +35,40 @@ mitmproxy regardless of client configuration, so a client that ignores
 is intercepted rather than broken. `HTTPS_PROXY` is still set and still works;
 it is a convenience for tools that honour it, not the boundary. This is exactly
 the hosted environment's arrangement.
+
+### Why not `internal: true`
+
+That was the original design, and it cannot work with transparent capture.
+Docker programs this on the host for an internal network
+([libnetwork `setupInternalNetworkRules`](https://github.com/moby/moby/blob/master/libnetwork/drivers/bridge/setup_ip_tables_linux.go)):
+
+```
+-i br-X ! -d 172.31.240.0/24 -j DROP
+```
+
+Every packet with an off-subnet destination is dropped *at the bridge*, before
+it can reach the proxy container — which is precisely the traffic a transparent
+gateway exists to intercept. Measured directly: with `internal: true` the
+`:80`/`:443` REDIRECT rule matched **0 packets** while the `:53` rule (whose
+traffic is addressed to the in-subnet proxy) matched fine.
+
+The workarounds that keep the destination in-subnet — spoofing DNS to return
+the proxy's address, or DNAT inside `dev` — do not help either, because
+mitmproxy's transparent mode hard-requires the real original destination:
+
+```python
+class TransparentProxy(DestinationKnown):
+    assert self.context.server.address, "No server address set."
+```
+
+It reads that from `SO_ORIGINAL_DST`, which is set by the redirect in the
+proxy's own netns. Rewrite the destination anywhere upstream and mitmproxy
+connects to itself.
+
+So the choice is capture *or* `internal: true`. This stack takes capture,
+because it is what the hosted environment does, and recovers the confinement
+through the missing NAT rule instead. To go the other way, set
+`SANDBOX_TRANSPARENT=0` and restore `internal: true` on the network.
 
 ## Quick start
 
@@ -127,9 +164,10 @@ The differences that remain are structural and unavoidable:
 * **Choice of resolver.** There, a query to `1.1.1.1` really reaches Cloudflare.
   Here it is redirected to the proxy's resolver, which answers it. Same
   observable result, different path.
-* **Escape hatch.** There, egress is a filter that currently passes everything;
-  here it is `internal: true` with no route, so a protocol nobody thought about
-  fails closed instead of open.
+* **Escape hatch.** There, egress is a filter that currently passes everything.
+  Here, anything the proxy does not explicitly capture hits `FORWARD DROP` and
+  has no NAT to fall back on, so a protocol nobody thought about fails closed
+  rather than open.
 
 ## Turning the policy on
 
@@ -204,12 +242,11 @@ APIs, WebSocket upgrades, client-mTLS, certificate-pinned clients, or raw TCP
 punched deliberately, not worked around.
 
 **Capabilities.** Transparent capture costs `NET_ADMIN` on both containers —
-the proxy programs the redirect, `dev` installs its own default route. On `dev`
-that grants no path out (the network is still `internal: true`, so the only
-reachable peer is the proxy), but it does mean a root process there can tear
-down its own routing. Set `SANDBOX_TRANSPARENT=0` and drop both `cap_add`
-blocks to run explicit-proxy-only, at the cost of proxy-unaware clients
-breaking again.
+the proxy programs the redirect, `dev` replaces its own default route. A root
+process in `dev` can therefore tear down its routing and route around the
+proxy. That is a denial of service against itself, not an escape: with no NAT
+for the subnet there is nowhere else to go. `sandbox-verify` tests exactly this
+by adding a route via the bridge gateway and confirming it is a dead end.
 
 **Scope.** This confines the network only. Filesystem and syscalls are stock
 Docker defaults — this image deliberately ships `tcpdump`, `nmap`, and

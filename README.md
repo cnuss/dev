@@ -127,9 +127,10 @@ The Dockerfile uses a multi-stage build:
 ## Network Sandbox
 
 `docker-compose.yml` runs this image with the same network confinement as
-Claude Code's hosted environment: the container sits on an `internal: true`
-network with no route off the host, and its only peer is an allowlisting
-`CONNECT` proxy that re-terminates TLS with its own CA.
+Claude Code's hosted environment: the container's only route is a proxy that
+intercepts `:80`/`:443`/`:53` transparently and re-terminates TLS with its own
+CA. Docker adds no NAT rule for the sandbox subnet, so there is no path out
+that skips it.
 
 ```bash
 docker compose up -d                     # builds ./Dockerfile — not quick
@@ -139,8 +140,7 @@ docker compose exec dev zsh
 
 `:80`, `:443` and `:53` are redirected onto the proxy regardless of client
 configuration, so tools that ignore `HTTPS_PROXY` are intercepted rather than
-broken — the hosted environment's arrangement, and the reason the network is
-`internal: true` with the proxy as its only route.
+broken — the hosted environment's arrangement.
 
 Egress policy is `sandbox/allowlist.txt`, re-read live, governing connections
 and name resolution alike. It ships as `*` (open) because that is what the
