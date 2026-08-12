@@ -2,29 +2,36 @@
 
 Supporting pieces for the root **[docker-compose.yml](../docker-compose.yml)**,
 which runs this repo's image under the same network confinement as Claude
-Code's hosted environment: no route to the internet at all, and one narrow
-exception — an HTTP `CONNECT` proxy that terminates TLS with its own CA and
-refuses any host that is not on an allowlist.
+Code's hosted environment: no route to the internet of its own, and one exit —
+a proxy that intercepts `:80`/`:443`/`:53` transparently, re-terminates TLS
+with its own CA, and applies whatever `allowlist.txt` says.
 
 ```
    ┌──────────────┐        sandbox (internal: true)        ┌──────────────┐
-   │     dev      │ ─────── no default route, no NAT ────► │    proxy     │
-   │ ./Dockerfile │        the only reachable peer         │  mitmproxy   │
-   └──────────────┘                                        └──────┬───────┘
-      HTTPS_PROXY=http://proxy:8080          :8080 CONNECT        │ egress (bridge)
-      nameserver 172.31.240.10               :53    DNS           ▼
-      SSL_CERT_FILE=/certs/ca-bundle.crt                     allowlist.txt
-                                                       everything else 403 / NXDOMAIN
+   │     dev      │ ─── default route, everything ──────►  │    proxy     │
+   │ ./Dockerfile │      :80/:443/:53 REDIRECTed           │  mitmproxy   │
+   └──────────────┘      the rest dropped                  └──────┬───────┘
+      HTTPS_PROXY=http://proxy:8080     :8080 CONNECT             │ egress (bridge)
+      default via 172.31.240.10         :8082 transparent         ▼
+      nameserver 172.31.240.10          :53   DNS            allowlist.txt
+      SSL_CERT_FILE=/certs/ca-bundle.crt                     ( `*` by default )
 ```
 
-The confinement is structural, not advisory. `sandbox` is an `internal: true`
-network, so Docker programs no gateway and no masquerade rule for it — a
-process in `dev` cannot send an IP packet off the host even if it ignores every
-proxy variable, drops the CA, or runs as root.
+Two things are true at once:
 
-One allowlist governs both tiers. A host that is not on it cannot be connected
-to *and cannot be resolved*, which is what keeps a lookup for
-`<secrets>.attacker.example` from being a way out.
+**The boundary is structural.** `sandbox` is an `internal: true` network, so
+Docker programs no gateway and no masquerade rule. The proxy container is the
+sandbox's default route, but it forwards nothing — `FORWARD` policy is `DROP`
+and no `MASQUERADE` rule is ever added. Every packet either lands on a listener
+inside the proxy or dies there. A process in `dev` cannot send an IP packet off
+the host even as root.
+
+**Capture is transparent.** `:80`, `:443` and `:53` are `REDIRECT`ed onto
+mitmproxy regardless of client configuration, so a client that ignores
+`HTTPS_PROXY` — Node's built-in `fetch`, `aiohttp`, a hand-rolled Go dialer —
+is intercepted rather than broken. `HTTPS_PROXY` is still set and still works;
+it is a convenience for tools that honour it, not the boundary. This is exactly
+the hosted environment's arrangement.
 
 ## Quick start
 
@@ -41,11 +48,11 @@ the whole multi-stage build — homebrew, apt, claude, SBOM — and takes a whil
 `docker compose up -d proxy` brings up just the egress tier if that is all you
 need.
 
-`sandbox-verify` is the interesting part — it checks that there is no default
-route, that raw HTTPS and ICMP off-network fail, that an allowlisted host
-succeeds *and* verifies against the sandbox CA alone (proving TLS really is
-re-terminated), and that denied hosts, non-443 ports, and plain-HTTP proxying
-are refused.
+`sandbox-verify` is the interesting part — it checks that ICMP and uncaptured
+ports go nowhere, that a query aimed at `1.1.1.1` is captured and answered,
+that traffic verifies against the sandbox CA alone (proving TLS really is
+re-terminated), and — the point of the transparent tier — that a client passing
+`--noproxy '*'` is intercepted anyway rather than failing.
 
 ## Editing the policy
 
@@ -53,6 +60,7 @@ are refused.
 takes effect on the next request — no restart.
 
 ```
+*               # any host — open egress, the shipped default
 example.com     # exact host only
 .example.com    # the domain and every subdomain
 *.example.com   # same as .example.com
@@ -83,9 +91,9 @@ docker compose exec dev curl -s --noproxy '*' http://proxy:8081/status | jq
 
 | Behaviour | Why |
 |---|---|
-| Only `HTTPS_PROXY` is set, never `HTTP_PROXY` | A client that falls back to plain HTTP should fail loudly, not quietly skip the `CONNECT` path |
-| Plain-HTTP proxy requests get **405** | Same signal the hosted proxy gives; set `SANDBOX_ALLOW_PLAIN_HTTP=1` to permit them |
-| Non-443 ports get **403** | Matches "non-443 HTTPS ports are not supported" |
+| Only `HTTPS_PROXY` is set, never `HTTP_PROXY` | Matches the hosted variable set; the proxy serves only the `CONNECT` path |
+| Explicit plain-HTTP proxy requests get **405** | Same signal the hosted proxy gives. Transparently captured `:80` traffic is exempt — that is ordinary traffic, not a misconfigured client |
+| Non-443 ports get **403** on the explicit proxy | Matches "non-443 HTTPS ports are not supported" |
 | A pile of per-tool CA variables | `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `PIP_CERT`, `AWS_CA_BUNDLE`, `GIT_SSL_CAINFO`, `CARGO_HTTP_CAINFO`, … — no single variable covers every runtime |
 | `ca-bundle.crt` = public roots **+** the proxy CA | So `no_proxy` destinations, which never see the interception CA, still verify against a real chain |
 | CA also installed via `update-ca-certificates` | For tools that read only the system store (`openssl s_client`, some Go/Rust binaries, `apt`) |
@@ -95,30 +103,44 @@ across restarts, so a trust store you built by hand does not go stale. The
 private key lives in the volume — this is a development sandbox, not a
 production egress tier.
 
-## Where this deliberately differs
+## What the hosted environment actually does
 
-The hosted environment enforces policy with a **transparent** egress gateway:
-outbound TCP/443 is intercepted regardless of client configuration, and the
-gateway mints a leaf for whatever SNI is presented (issuer `O = Anthropic,
-CN = Egress Gateway SDS Issuing CA`). `HTTPS_PROXY` there is a convenience for
-tools that honour it, not the boundary. Its DNS is unrestricted — UDP/53 to any
-resolver works.
+Measured, not assumed — the defaults here are set to match:
 
-This stack inverts both:
-
-| | hosted | here |
+| Probe | Hosted result | Here |
 |---|---|---|
-| Boundary | transparent interception of :443 | `internal: true`, no route at all |
-| Proxy-unaware clients | silently intercepted, still work | fail to connect |
-| DNS | open to any resolver | one filtered resolver, allowlist-scoped |
+| `CONNECT` to 56 hosts incl. `pastebin.com`, `webhook.site`, `ngrok.com` | all `200` | all `200` (`*` policy) |
+| Direct TCP :443 ignoring the proxy | intercepted, cert issued by `O = Anthropic, CN = Egress Gateway SDS Issuing CA` | intercepted, cert issued by the sandbox CA |
+| Direct TCP :80 ignoring the proxy | real origin response | intercepted, forwarded |
+| UDP :53 to `8.8.8.8`, `1.1.1.1`, `9.9.9.9` | all answered | all answered (`REDIRECT`ed to the local resolver) |
+| TCP :53, other ports | timeout | dropped |
+| ICMP echo to `8.8.8.8`, `1.1.1.1` | no reply | dropped |
+| TLS SNI for a host that does not exist | gateway mints a leaf anyway | mitmproxy mints a leaf anyway |
 
-The `internal: true` boundary is the stronger of the two — nothing escapes it,
-including protocols the gateway never sees. The cost is that a client ignoring
-`HTTPS_PROXY` (see below) breaks instead of being caught. Adding transparent
-capture on top would need the proxy container to become the sandbox's default
-gateway, with `NET_ADMIN`, `ip_forward`, and an iptables `REDIRECT` of :443 to
-a second `--mode transparent` listener. Worth doing if proxy-unaware tooling
-matters more than the simplicity; it is not wired up here.
+The one thing the hosted environment does **not** do is filter. Its policy
+machinery is real — the proxy documents `403`/`407` for denied hosts and
+records them — but nothing was denied in this session. So `allowlist.txt` ships
+with `*`.
+
+The differences that remain are structural and unavoidable:
+
+* **Choice of resolver.** There, a query to `1.1.1.1` really reaches Cloudflare.
+  Here it is redirected to the proxy's resolver, which answers it. Same
+  observable result, different path.
+* **Escape hatch.** There, egress is a filter that currently passes everything;
+  here it is `internal: true` with no route, so a protocol nobody thought about
+  fails closed instead of open.
+
+## Turning the policy on
+
+`allowlist.txt` ships open to match the hosted environment. Delete the `*` and
+it becomes deny-by-default, governing both tiers at once — an unlisted host
+cannot be connected to *and cannot be resolved*, which is what keeps a lookup
+for `<secrets>.attacker.example` from being a way out. The curated list already
+in the file (registries, distro archives, source hosting) becomes the policy.
+
+`sandbox-verify` notices which mode is active and asserts accordingly; the
+policy checks report `SKIP` while `*` is present rather than failing.
 
 ## Configuration
 
@@ -127,8 +149,9 @@ Copy `env.example` (repo root) to `.env`. Everything is optional.
 | Variable | Default | Meaning |
 |---|---|---|
 | `SANDBOX_BASE_IMAGE` | `ubuntu:26.04` | Passed to the root Dockerfile's `BASE_IMAGE` |
-| `SANDBOX_ALLOWED_PORTS` | `443` | Ports the proxy will `CONNECT` to |
-| `SANDBOX_ALLOW_PLAIN_HTTP` | `0` | `1` permits plain-HTTP proxying instead of 405 |
+| `SANDBOX_ALLOWED_PORTS` | `443` | Ports the explicit proxy will `CONNECT` to |
+| `SANDBOX_ALLOW_PLAIN_HTTP` | `0` | `1` permits explicit plain-HTTP proxying instead of 405 |
+| `SANDBOX_TRANSPARENT` | `1` | `0` disables the redirect — explicit proxy only |
 | `SANDBOX_CA_CN` / `SANDBOX_CA_DAYS` | … / `3650` | CA identity and lifetime |
 | `SANDBOX_PROXY_UID` | `1000` | uid the mitmproxy image runs as; owns the CA key |
 | `SANDBOX_MITMPROXY_IMAGE` / `SANDBOX_ALPINE_IMAGE` | pinned | Support image versions |
@@ -148,35 +171,30 @@ any image with a shell. Debian/Ubuntu bases also get the CA in the system trust
 store; elsewhere the `*_CA_BUNDLE` variables still apply and the entrypoint
 says so rather than failing.
 
-## How DNS is confined
+## How DNS works
 
-Docker's embedded resolver (127.0.0.11) forwards misses to the daemon's own
-nameservers, and that keeps working on an `internal` network — so by default a
-sandboxed container cannot *reach* the internet but can still *query* it. No
-data path for ordinary traffic, but a fine exfiltration channel.
+The hosted environment answers whichever nameserver you aim at — `8.8.8.8`,
+`1.1.1.1` and `9.9.9.9` all responded when probed. That is reproduced here by
+capture rather than by routing: a `REDIRECT` on `:53` sends every query to the
+proxy's own resolver no matter what destination the client picked, so
+`nslookup example.com 1.1.1.1` works exactly as it does upstream.
 
-The entrypoint closes it by overwriting `/etc/resolv.conf` with a single
-`nameserver 172.31.240.10`, the proxy's own address. From then on:
+The entrypoint also writes `nameserver 172.31.240.10` into `/etc/resolv.conf`,
+so the ordinary path does not depend on the redirect at all. That takes
+Docker's embedded resolver (127.0.0.11) out of the picture — it forwards misses
+to the daemon's own nameservers, which keeps working on an `internal` network
+and would be a lookup path the proxy never sees. `proxy` itself still resolves
+because compose puts it in `/etc/hosts` and nsswitch reads `files` before
+`dns`.
 
-* The embedded resolver is out of the picture entirely.
-* The only reachable DNS server is on the sandbox network, and it filters
-  against the same `allowlist.txt` — a name that is not listed is answered
-  NXDOMAIN locally and no query ever leaves.
-* `proxy` still resolves, because compose puts it in `/etc/hosts` (`extra_hosts`)
-  and nsswitch reads `files` before `dns`. Service discovery never has to
-  survive the switch.
-* Actual resolution happens on the proxy's egress leg — which is what
-  `CLAUDE_CODE_PROXY_RESOLVES_HOSTS=true` means in the hosted environment.
+With `*` in the allowlist every name is forwarded. Remove it and the resolver
+filters too: unlisted names are answered NXDOMAIN locally and no query leaves
+the box. NXDOMAIN rather than REFUSED so glibc fails fast and unambiguously
+("Name or service not known") instead of reporting a temporary failure.
 
-NXDOMAIN rather than REFUSED so glibc fails fast and unambiguously ("Name or
-service not known") instead of retrying and reporting a temporary failure.
-`sandbox-verify` asserts all of it, including that an invented name under an
-unlisted domain does not resolve.
-
-One consequence worth knowing: a host is unreachable *and* unresolvable until
-it is on the allowlist, so a missing entry now shows up as a DNS failure rather
-than a 403. `/status` reports both — check `recentDenials` for a
-`dns-not-in-allowlist` reason before assuming the network is broken.
+A missing allowlist entry then shows up as a DNS failure rather than a 403.
+`/status` reports both — check `recentDenials` for a `dns-not-in-allowlist`
+reason before assuming the network is broken.
 
 ## Known gaps
 
@@ -185,14 +203,17 @@ APIs, WebSocket upgrades, client-mTLS, certificate-pinned clients, or raw TCP
 (databases, SSH). Same limitations as the hosted proxy — they need a hole
 punched deliberately, not worked around.
 
-**Clients that ignore `HTTPS_PROXY`.** Node's built-in `fetch` (use
-`NODE_USE_ENV_PROXY=1` on Node ≥ 22.21), `aiohttp` (`trust_env=True`), Ruby
-bundler (reads only `HTTP_PROXY`), and hand-rolled Go dialers will time out
-rather than route. In this sandbox that is a hard failure, not a bypass.
+**Capabilities.** Transparent capture costs `NET_ADMIN` on both containers —
+the proxy programs the redirect, `dev` installs its own default route. On `dev`
+that grants no path out (the network is still `internal: true`, so the only
+reachable peer is the proxy), but it does mean a root process there can tear
+down its own routing. Set `SANDBOX_TRANSPARENT=0` and drop both `cap_add`
+blocks to run explicit-proxy-only, at the cost of proxy-unaware clients
+breaking again.
 
-**Scope.** This confines the network only. Capabilities, filesystem, and
-syscalls are stock Docker defaults — this image deliberately ships `tcpdump`,
-`nmap`, and `nsenter`.
+**Scope.** This confines the network only. Filesystem and syscalls are stock
+Docker defaults — this image deliberately ships `tcpdump`, `nmap`, and
+`nsenter`.
 
 ## Layout
 
@@ -201,10 +222,11 @@ docker-compose.yml       networks, services, the environment contract (repo root
 env.example              knobs (repo root)
 sandbox/
 ├── allowlist.txt        the policy
-├── entrypoint.sh        installs the CA, then runs the normal command
+├── entrypoint.sh        default route + resolver + CA, then the normal command
 ├── verify.sh            sandbox-verify: asserts the boundary from inside
 ├── ca/                  one-shot CA mint (openssl)
-└── proxy/               mitmproxy + the allowlist addon
+└── proxy/               mitmproxy + the policy addon
+    ├── entrypoint.sh    programs the transparent-capture redirect
     ├── sandbox_proxy.py enforcement + /status endpoint
     └── test_rules.py    python3 sandbox/proxy/test_rules.py
 ```

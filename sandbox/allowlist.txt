@@ -1,14 +1,23 @@
-# Hosts the sandbox may reach. Everything else gets 403 at CONNECT — and is
-# not resolvable either: the proxy is the sandbox's only reachable DNS server
-# and it answers NXDOMAIN for anything not listed here.
+# Egress policy. Governs both what can be connected to and what can be
+# resolved — the proxy is the sandbox's only route and its only resolver.
 #
-#   example.com    exact host only
-#   .example.com   the domain and every subdomain
-#   *.example.com  same as .example.com
+#   *               any host (open egress)
+#   example.com     exact host only
+#   .example.com    the domain and every subdomain
+#   *.example.com   same as .example.com
 #
 # Edited live: the proxy re-reads this file on mtime change, no restart needed.
 # Check what is loaded, and why something was denied:
 #   curl -s --noproxy '*' http://proxy:8081/status | jq
+
+# Open by default, because that is what the hosted environment does. Probing
+# it with CONNECT returns 200 for every resolvable host — including
+# pastebin.com, webhook.site, transfer.sh and ngrok.com. The interception and
+# logging are real there; the filtering is not.
+#
+# Everything below this line is inert while `*` is present. Delete the `*` to
+# switch to deny-by-default, and the curated list becomes the policy.
+*
 
 # --- package registries -----------------------------------------------------
 registry.npmjs.org
@@ -43,6 +52,6 @@ ghcr.io
 statsig.anthropic.com
 
 # --- used by sandbox-verify -------------------------------------------------
-# example.com is allowlisted and example.org deliberately is not; verify.sh
-# asserts the first resolves and the second does not.
+# With `*` removed, verify.sh expects example.com to be listed and example.org
+# not to be, and asserts the resolver and the proxy agree on both.
 example.com

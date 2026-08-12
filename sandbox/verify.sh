@@ -1,131 +1,156 @@
 #!/bin/sh
-# Prove the sandbox is actually a sandbox. Run inside the workload container:
+# Prove the sandbox behaves like the hosted environment. Run inside the
+# workload container:
 #
 #   docker compose exec dev sandbox-verify
 #
 # Every check is an assertion about the boundary, not a smoke test of the
-# image. A failure here means the confinement is weaker than advertised.
+# image. The expectations track what the hosted environment actually does,
+# measured rather than assumed:
+#
+#   TCP :80/:443  intercepted and re-terminated, whatever the client config
+#   UDP :53       answered, whichever nameserver the client aimed at
+#   ICMP          dropped
+#   other ports   dropped
+#
+# Policy checks (403 on an unlisted host) only run when allowlist.txt is in
+# deny-by-default mode — with `*` present they are skipped, not failed.
 set -u
 
 ALLOWED_HOST=${ALLOWED_HOST:-example.com}
 DENIED_HOST=${DENIED_HOST:-example.org}
-UNRESOLVABLE_HOST=${UNRESOLVABLE_HOST:-blocked.example.invalid}
 PROXY=${HTTPS_PROXY:-http://proxy:8080}
 RESOLVER=${SANDBOX_RESOLVER:-172.31.240.10}
+GATEWAY=${SANDBOX_GATEWAY:-172.31.240.10}
 STATUS_URL=${STATUS_URL:-http://proxy:8081/status}
 
 pass=0
 fail=0
+skip=0
 
 ok()   { pass=$((pass + 1)); printf '  \033[32mPASS\033[0m  %s\n' "$1"; }
 bad()  { fail=$((fail + 1)); printf '  \033[31mFAIL\033[0m  %s\n' "$1"; [ $# -gt 1 ] && printf '        %s\n' "$2"; }
-head_() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+skip_(){ skip=$((skip + 1)); printf '  \033[33mSKIP\033[0m  %s\n' "$1"; }
+head_(){ printf '\n\033[1m%s\033[0m\n' "$1"; }
 
-head_ "1. No route off the sandbox network"
+# Is the policy open? Ask the proxy rather than reading the file, so this
+# tracks what is actually loaded.
+policy=$(curl -s --noproxy '*' --max-time 5 "$STATUS_URL" 2>/dev/null)
+if echo "$policy" | grep -q '"\*"'; then
+    OPEN_POLICY=1
+else
+    OPEN_POLICY=0
+fi
+
+head_ "1. The sandbox has no independent path out"
 
 if ! command -v ip >/dev/null 2>&1; then
-    printf '  SKIP  no iproute2 in this image\n'
-elif [ -z "$(ip route show default 2>/dev/null)" ]; then
-    ok "no default route (internal network, no NAT)"
+    skip_ "no iproute2 in this image"
+elif ip route show default 2>/dev/null | grep -q "$GATEWAY"; then
+    ok "default route points at the proxy ($GATEWAY)"
 else
-    bad "a default route exists" "$(ip route show default)"
+    bad "default route does not go via $GATEWAY" "$(ip route show default 2>&1)"
 fi
 
-out=$(curl -sS --noproxy '*' --max-time 5 https://1.1.1.1/ 2>&1)
-if [ $? -ne 0 ]; then
-    ok "direct HTTPS to a raw IP fails without the proxy"
-else
-    bad "direct HTTPS to 1.1.1.1 succeeded — egress is not confined" "$out"
-fi
-
+# ICMP is dropped in the hosted environment too — nothing off-host answers.
 if ping -c1 -W3 8.8.8.8 >/dev/null 2>&1; then
-    bad "ICMP to 8.8.8.8 succeeded — egress is not confined"
+    bad "ICMP to 8.8.8.8 succeeded — the hosted environment drops it"
 else
-    ok "ICMP off-network fails"
+    ok "ICMP off-network is dropped"
 fi
 
-head_ "2. Name resolution is confined to the proxy"
+# Only :80, :443 and :53 are captured; everything else has nowhere to go.
+# (/dev/tcp is a bash builtin and this runs under sh, so use nc.)
+if ! command -v nc >/dev/null 2>&1; then
+    skip_ "no netcat in this image"
+elif timeout 8 nc -z -w 5 1.1.1.1 22 >/dev/null 2>&1; then
+    bad "TCP :22 to a public IP connected — only :80/:443 should be captured"
+else
+    ok "uncaptured ports (:22) go nowhere"
+fi
+
+head_ "2. Name resolution is answered by the proxy"
 
 if grep -q "nameserver ${RESOLVER}" /etc/resolv.conf 2>/dev/null; then
-    ok "resolv.conf points only at the proxy ($RESOLVER)"
+    ok "resolv.conf points at the proxy ($RESOLVER)"
 else
     bad "resolv.conf does not point at $RESOLVER" "$(cat /etc/resolv.conf 2>&1)"
 fi
 
 if getent hosts "$ALLOWED_HOST" >/dev/null 2>&1; then
-    ok "$ALLOWED_HOST resolves (allowlisted)"
+    ok "$ALLOWED_HOST resolves"
 else
-    bad "$ALLOWED_HOST does not resolve" "the proxy's resolver should forward this one"
+    bad "$ALLOWED_HOST does not resolve" "check 'docker compose logs proxy'"
 fi
 
-if getent hosts "$DENIED_HOST" >/dev/null 2>&1; then
-    bad "$DENIED_HOST resolved — the resolver is not filtering"
-else
-    ok "$DENIED_HOST does not resolve (not allowlisted)"
-fi
-
-# The exfiltration case: a made-up label under a domain nobody allowlisted.
-if getent hosts "s3cr3t.exfil.example.net" >/dev/null 2>&1; then
-    bad "an arbitrary name resolved — DNS exfiltration is possible"
-else
-    ok "arbitrary names do not resolve (no DNS exfiltration path)"
-fi
-
+# The hosted environment answers whichever resolver you aim at; the redirect
+# reproduces that by capturing :53 to any destination.
 if command -v nslookup >/dev/null 2>&1; then
-    if timeout 6 nslookup "$ALLOWED_HOST" 8.8.8.8 >/dev/null 2>&1; then
-        bad "reached 8.8.8.8 directly — the sandbox can bypass the resolver"
+    if timeout 8 nslookup "$ALLOWED_HOST" 1.1.1.1 >/dev/null 2>&1; then
+        ok "queries aimed at 1.1.1.1 are captured and answered"
     else
-        ok "external resolvers are unreachable (no route)"
+        bad "a query to 1.1.1.1 was not answered" "the :53 redirect is not working"
     fi
 else
-    printf '  SKIP  no nslookup in this image\n'
+    skip_ "no nslookup in this image"
 fi
 
-head_ "3. Allowed traffic goes through the proxy"
+head_ "3. Traffic is intercepted and re-terminated"
 
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://$ALLOWED_HOST/" 2>&1)
 if [ "$code" = "200" ] || [ "$code" = "301" ] || [ "$code" = "302" ]; then
     ok "https://$ALLOWED_HOST -> $code via $PROXY"
 else
-    bad "https://$ALLOWED_HOST returned '$code'" "is it in allowlist.txt?"
+    bad "https://$ALLOWED_HOST returned '$code'"
 fi
 
 if curl -s -o /dev/null --max-time 20 --cacert /certs/ca-cert.pem "https://$ALLOWED_HOST/"; then
     ok "chain verifies against the sandbox CA alone (TLS is re-terminated)"
 else
-    bad "the sandbox CA does not verify the connection" "expected MITM interception"
+    bad "the sandbox CA does not verify the connection" "expected interception"
 fi
 
-head_ "4. Everything else is refused"
+# The point of the transparent tier: a client that ignores HTTPS_PROXY is
+# captured anyway, exactly as in the hosted environment.
+code=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 20 "https://$ALLOWED_HOST/" 2>&1)
+if [ "$code" = "200" ] || [ "$code" = "301" ] || [ "$code" = "302" ]; then
+    ok "a proxy-unaware client is transparently intercepted -> $code"
+else
+    bad "proxy-unaware HTTPS returned '$code'" "the :443 redirect is not working"
+fi
 
-# A refused CONNECT surfaces two ways depending on the curl build: as the
-# tunnel status in %{http_code}, or as "CONNECT tunnel failed, response 403"
-# on stderr. Capture both and match either.
-refusal() {
-    curl -sS -o /dev/null -w ' http_code=%{http_code}' --max-time 20 "$@" 2>&1
-}
+code=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 20 "http://$ALLOWED_HOST/" 2>&1)
+if [ -n "$code" ] && [ "$code" != "000" ]; then
+    ok "proxy-unaware plain HTTP is transparently intercepted -> $code"
+else
+    bad "proxy-unaware HTTP got no response" "the :80 redirect is not working"
+fi
 
-for host in "$DENIED_HOST" "$UNRESOLVABLE_HOST"; do
-    out=$(refusal "https://$host/")
+head_ "4. Policy enforcement"
+
+if [ "$OPEN_POLICY" = "1" ]; then
+    skip_ "allowlist is open ('*'), matching the hosted environment"
+    skip_ "remove '*' from allowlist.txt to enforce deny-by-default"
+else
+    out=$(curl -sS -o /dev/null -w ' http_code=%{http_code}' --max-time 20 "https://$DENIED_HOST/" 2>&1)
     if echo "$out" | grep -q '403'; then
-        ok "https://$host refused with 403"
+        ok "https://$DENIED_HOST refused with 403"
     else
-        bad "https://$host was not refused with 403" "$out"
+        bad "https://$DENIED_HOST was not refused" "$out"
     fi
-done
 
-out=$(refusal "https://$ALLOWED_HOST:8443/")
-if echo "$out" | grep -q '403'; then
-    ok "non-443 port refused with 403"
-else
-    bad "port 8443 was not refused" "$out"
-fi
+    if getent hosts "$DENIED_HOST" >/dev/null 2>&1; then
+        bad "$DENIED_HOST resolved — the resolver is not filtering"
+    else
+        ok "$DENIED_HOST does not resolve (no DNS exfiltration path)"
+    fi
 
-out=$(refusal --proxy "$PROXY" "http://$ALLOWED_HOST/")
-if echo "$out" | grep -q '405'; then
-    ok "plain-HTTP proxying refused with 405"
-else
-    bad "plain HTTP was not refused with 405" "$out"
+    out=$(curl -sS -o /dev/null -w ' http_code=%{http_code}' --max-time 20 --proxy "$PROXY" "http://$ALLOWED_HOST/" 2>&1)
+    if echo "$out" | grep -q '405'; then
+        ok "explicit plain-HTTP proxying refused with 405"
+    else
+        bad "explicit plain HTTP was not refused with 405" "$out"
+    fi
 fi
 
 head_ "5. Diagnostics"
@@ -136,5 +161,5 @@ else
     bad "proxy status endpoint unreachable at $STATUS_URL"
 fi
 
-printf '\n%s passed, %s failed\n' "$pass" "$fail"
+printf '\n%s passed, %s failed, %s skipped\n' "$pass" "$fail" "$skip"
 [ "$fail" -eq 0 ]

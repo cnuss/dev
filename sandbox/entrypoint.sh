@@ -8,6 +8,26 @@ set -eu
 
 CERT=${SANDBOX_CA_CERT:-/certs/ca-cert.pem}
 RESOLVER=${SANDBOX_RESOLVER:-}
+GATEWAY=${SANDBOX_GATEWAY:-}
+
+# Route everything at the proxy so it can intercept transparently.
+#
+# An `internal` network has no default route by design. Adding one that points
+# at the proxy does not create a way out — the proxy forwards nothing, it only
+# redirects :80/:443/:53 onto its own listeners — but it does mean a client
+# that ignores HTTPS_PROXY (Node's built-in fetch, a hand-rolled Go dialer)
+# gets captured instead of hanging, which is how the hosted environment
+# behaves.
+if [ -n "$GATEWAY" ] && command -v ip >/dev/null 2>&1; then
+    if ip route show default 2>/dev/null | grep -q .; then
+        echo "sandbox: default route already present, leaving it alone"
+    elif ip route add default via "$GATEWAY" 2>/dev/null; then
+        echo "sandbox: default route via $GATEWAY (transparent capture)"
+    else
+        echo "sandbox: could not add a default route via $GATEWAY; only" >&2
+        echo "         proxy-aware clients will reach the network" >&2
+    fi
+fi
 
 # Point name resolution at the proxy's allowlist-filtering resolver.
 #

@@ -46,6 +46,7 @@ def check_dns(port: int) -> None:
 checks = (
     ("proxy", check_tcp, int(os.environ.get("SANDBOX_LISTEN_PORT", "8080"))),
     ("status", check_tcp, int(os.environ.get("SANDBOX_STATUS_PORT", "8081"))),
+    ("transparent", check_tcp, int(os.environ.get("SANDBOX_TRANSPARENT_PORT", "8082"))),
     ("dns", check_dns, int(os.environ.get("SANDBOX_DNS_PORT", "53"))),
 )
 

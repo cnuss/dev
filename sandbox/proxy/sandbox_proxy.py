@@ -64,6 +64,7 @@ HEALTHCHECK_NAME = "healthcheck.sandbox.invalid"
 def parse_rules(path: str) -> list[str]:
     """Read allowlist.txt into normalised rules.
 
+    `*`             any host at all — open egress, the hosted default
     `example.com`   exact host only
     `.example.com`  the domain and any subdomain of it
     `*.example.com` same as the above (accepted for familiarity)
@@ -74,7 +75,7 @@ def parse_rules(path: str) -> list[str]:
             line = raw.split("#", 1)[0].strip().lower().rstrip(".")
             if not line:
                 continue
-            if line.startswith("*."):
+            if line != "*" and line.startswith("*."):
                 line = line[1:]
             rules.append(line)
     return rules
@@ -83,12 +84,25 @@ def parse_rules(path: str) -> list[str]:
 def match_rule(host: str, rules: list[str]) -> str | None:
     host = host.lower().rstrip(".")
     for rule in rules:
+        if rule == "*":
+            return rule
         if rule.startswith("."):
             if host == rule[1:] or host.endswith(rule):
                 return rule
         elif host == rule:
             return rule
     return None
+
+
+def is_transparent(flow: object) -> bool:
+    """True when the flow was captured by the redirect rather than handed to
+    us by a proxy-aware client. Transparent flows have no CONNECT and carry
+    plain HTTP on :80 legitimately, so two of the regular-mode rules do not
+    apply to them."""
+    try:
+        return type(flow.client_conn.proxy_mode).__name__ == "TransparentMode"
+    except AttributeError:
+        return False
 
 
 class SandboxEgress:
@@ -160,7 +174,14 @@ class SandboxEgress:
         if flow.response is not None:
             return
 
-        if flow.request.scheme == "http" and not ALLOW_PLAIN_HTTP:
+        # 405 is a statement about proxy *configuration* — a client that set
+        # HTTP_PROXY and sent an absolute-form request. A transparently
+        # captured :80 request is not that, and must be allowed through.
+        if (
+            flow.request.scheme == "http"
+            and not ALLOW_PLAIN_HTTP
+            and not is_transparent(flow)
+        ):
             self._deny(
                 flow,
                 flow.request.pretty_host,
@@ -192,12 +213,17 @@ class SandboxEgress:
 
         for question in flow.request.questions:
             name = question.name
+            # Answered locally whatever the policy says, so the probe stays
+            # hermetic: no upstream query, and a broken forwarder cannot make
+            # the container look unhealthy.
+            if name.lower().rstrip(".") == HEALTHCHECK_NAME:
+                flow.response = flow.request.fail(response_codes.NXDOMAIN)
+                return
             if match_rule(name, rules) is None:
-                if name.lower().rstrip(".") != HEALTHCHECK_NAME:
-                    self._record(name, 53, "dns-not-in-allowlist", "NXDOMAIN")
-                    with self.lock:
-                        self.dns_denied_count += 1
-                    logger.warning(f"sandbox: DENY dns {name} -> NXDOMAIN")
+                self._record(name, 53, "dns-not-in-allowlist", "NXDOMAIN")
+                with self.lock:
+                    self.dns_denied_count += 1
+                logger.warning(f"sandbox: DENY dns {name} -> NXDOMAIN")
                 flow.response = flow.request.fail(response_codes.NXDOMAIN)
                 return
 

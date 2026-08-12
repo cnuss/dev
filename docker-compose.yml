@@ -59,12 +59,25 @@ services:
       # Plain-HTTP (non-CONNECT, absolute-form) proxy requests get 405, the
       # same way the real proxy rejects HTTP_PROXY-configured clients.
       SANDBOX_ALLOW_PLAIN_HTTP: ${SANDBOX_ALLOW_PLAIN_HTTP:-0}
+      # Source subnet the transparent-capture rules match on. Matching on the
+      # subnet rather than an interface name because compose does not
+      # guarantee which of the proxy's two NICs is eth0.
+      SANDBOX_SUBNET: 172.31.240.0/24
+      # Set to 0 to run explicit-proxy-only, without the redirect.
+      SANDBOX_TRANSPARENT: ${SANDBOX_TRANSPARENT:-1}
     volumes:
       - certs:/certs
       - ./sandbox/allowlist.txt:/etc/sandbox/allowlist.txt:ro
+    # NET_ADMIN to program the redirect; ip_forward so the kernel accepts
+    # packets the sandbox routes here. FORWARD policy is DROP and nothing is
+    # ever masqueraded, so forwarding grants no path out — every packet either
+    # lands on a listener in this container or dies.
+    cap_add:
+      - NET_ADMIN
     # mitmproxy runs as a non-root user and has to bind :53 for the resolver.
     sysctls:
       net.ipv4.ip_unprivileged_port_start: 0
+      net.ipv4.ip_forward: 1
     networks:
       sandbox:
         # Pinned: the workload's /etc/resolv.conf and /etc/hosts point here by
@@ -120,10 +133,11 @@ services:
       YARN_HTTPS_PROXY: *proxy-url
       GLOBAL_AGENT_HTTPS_PROXY: *proxy-url
       GLOBAL_AGENT_NO_PROXY: *noproxy
-      # The entrypoint rewrites /etc/resolv.conf to this address, so the only
-      # resolver the workload can reach is the allowlist-filtering one on the
-      # proxy. Nothing here talks to Docker's embedded DNS.
+      # The entrypoint points /etc/resolv.conf here and installs a default
+      # route via the same address, which is what puts the proxy in the path
+      # of traffic from clients that ignore HTTPS_PROXY entirely.
       SANDBOX_RESOLVER: 172.31.240.10
+      SANDBOX_GATEWAY: 172.31.240.10
     volumes:
       - certs:/certs:ro
       - ./sandbox/entrypoint.sh:/usr/local/bin/sandbox-entrypoint:ro
@@ -137,6 +151,11 @@ services:
     # discovery never has to survive the switch.
     extra_hosts:
       - "proxy:172.31.240.10"
+    # To install its own default route. The route leads only to the proxy —
+    # the network is still `internal: true`, so this grants no path out, it
+    # just puts unaware traffic in front of the interceptor.
+    cap_add:
+      - NET_ADMIN
     security_opt:
       - no-new-privileges:true
     init: true
