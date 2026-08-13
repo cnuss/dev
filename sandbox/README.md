@@ -14,7 +14,7 @@ with its own CA, and applies whatever `allowlist.txt` says.
       HTTPS_PROXY=http://proxy:8080     :8080 CONNECT             │ egress (bridge)
       default via 172.31.240.10         :8082 transparent         ▼
       nameserver 172.31.240.10          :53   DNS            allowlist.txt
-      SSL_CERT_FILE=/certs/ca-bundle.crt                     ( `*` by default )
+      SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt       ( `*` by default )
 ```
 
 Two things are true at once:
@@ -137,13 +137,73 @@ docker compose exec dev curl -s --noproxy '*' http://proxy:8081/status | jq
 | Explicit plain-HTTP proxy requests get **405** | Same signal the hosted proxy gives. Transparently captured `:80` traffic is exempt — that is ordinary traffic, not a misconfigured client |
 | Non-443 ports get **403** on the explicit proxy | Matches "non-443 HTTPS ports are not supported" |
 | A pile of per-tool CA variables | `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `PIP_CERT`, `AWS_CA_BUNDLE`, `GIT_SSL_CAINFO`, `CARGO_HTTP_CAINFO`, … — no single variable covers every runtime |
-| `ca-bundle.crt` = public roots **+** the proxy CA | So `no_proxy` destinations, which never see the interception CA, still verify against a real chain |
-| CA also installed via `update-ca-certificates` | For tools that read only the system store (`openssl s_client`, some Go/Rust binaries, `apt`) |
+| `/etc/ssl/certs/ca-certificates.crt` = public roots **+** the proxy CA | So `no_proxy` destinations, which never see the interception CA, still verify against a real chain |
+| CA installed via `update-ca-certificates` | For tools that read only the system store (`openssl s_client`, some Go/Rust binaries, `apt`) |
 
-The CA is minted once by the `ca` service into a shared volume and reused
-across restarts, so a trust store you built by hand does not go stale. The
-private key lives in the volume — this is a development sandbox, not a
-production egress tier.
+## The CA
+
+Minted at **image build time**, in the `combined` stage of
+[../Dockerfile](../Dockerfile), and installed into the standard locations:
+
+| Path | Mode | What |
+|---|---|---|
+| `/etc/ssl/private/dev.key` | `0600 root` | private key |
+| `/etc/ssl/private/dev.pem` | `0600 root` | key + cert in one file — mitmproxy's confdir seed, and the form nginx/haproxy want |
+| `/etc/ssl/private/dev.p12` | `0600 root` | PKCS#12, empty password — for keystores and OS/browser import |
+| `/usr/local/share/ca-certificates/dev.crt` | `0644` | cert only — the input `update-ca-certificates` reads |
+| `/etc/ssl/certs/dev.pem` | symlink | cert only, where `update-ca-certificates` publishes it |
+| `/etc/ssl/certs/ca-certificates.crt` | generated | public roots + this cert |
+
+> `/etc/ssl/certs/dev.pem` is the **certificate**; `/etc/ssl/private/dev.pem` is
+> the **key + certificate**. Same basename, different content — check the
+> directory.
+
+### Reusing it
+
+`dev` is deliberately dual-purpose: a signing CA *and* a valid server/client
+certificate. Because it is already in the system trust store, anything it
+serves or signs is trusted with no extra flags:
+
+```bash
+# serve TLS directly with it
+openssl s_server -cert /etc/ssl/certs/dev.pem -key /etc/ssl/private/dev.key -port 8443 -www
+curl https://localhost:8443/          # 200, no --cacert, no -k
+
+# or sign a per-host leaf with it
+openssl x509 -req -in app.csr -CA /etc/ssl/certs/dev.pem \
+    -CAkey /etc/ssl/private/dev.key -CAcreateserial -out app.crt
+```
+
+Hostnames it covers — CN matching is dead, so this SAN list is the whole story:
+
+| SAN | Matches |
+|---|---|
+| `dev`, `localhost`, `host.docker.internal` | exactly those names |
+| `*.dev.local`, `*.test.local`, `*.svc.cluster.local` | one label under each |
+| `127.0.0.1`, `::1` | those addresses |
+
+Wildcards require a parent of at least two labels, so `*.localhost` and `*.dev`
+would match nothing and are not present — use `foo.dev.local` instead of
+`foo.localhost`. For anything outside this list, sign a leaf as above.
+
+Both containers share one CA without a runtime volume: compose passes the `dev`
+image to the proxy build as an additional context (`ca: service:dev`), and the
+proxy copies the key out of it. The proxy does **not** add the CA to its own
+trust store — it verifies upstream against the real public roots.
+
+Layer caching keeps the CA stable across ordinary rebuilds. The weekly
+`--no-cache` build mints a fresh one, which is the only rotation there is; a
+trust store you built by hand outside the sandbox will go stale then.
+
+> [!WARNING]
+> **The CA private key is baked into the published image.** `cnuss/dev` is
+> pushed to `ghcr.io` and `index.docker.io` on every merge to `latest`, signed
+> and attested. Anyone who pulls it holds the key to a CA that every container
+> started from that image trusts, and can therefore forge a certificate for any
+> host and have it accepted. Treat any container running this image as having
+> no meaningful TLS verification against an attacker who has the public image.
+> This is deliberate — the alternative was a sandbox-only build target — but it
+> means the image is unsuitable for anything but local development.
 
 ## What the hosted environment actually does
 
@@ -195,9 +255,8 @@ Copy `env.example` (repo root) to `.env`. Everything is optional.
 | `SANDBOX_ALLOWED_PORTS` | `443` | Ports the explicit proxy will `CONNECT` to |
 | `SANDBOX_ALLOW_PLAIN_HTTP` | `0` | `1` permits explicit plain-HTTP proxying instead of 405 |
 | `SANDBOX_TRANSPARENT` | `1` | `0` disables the redirect — explicit proxy only |
-| `SANDBOX_CA_CN` / `SANDBOX_CA_DAYS` | … / `3650` | CA identity and lifetime |
-| `SANDBOX_PROXY_UID` | `1000` | uid the mitmproxy image runs as; owns the CA key |
-| `SANDBOX_MITMPROXY_IMAGE` / `SANDBOX_ALPINE_IMAGE` | pinned | Support image versions |
+| `SANDBOX_PROXY_UID` | `1000` | Fallback uid owning mitmproxy's confdir, used only if the `mitmproxy` user is absent |
+| `SANDBOX_MITMPROXY_IMAGE` | pinned | Proxy base image version |
 
 ### Confining a different image
 

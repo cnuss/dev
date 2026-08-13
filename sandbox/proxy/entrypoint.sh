@@ -17,6 +17,31 @@ SUBNET=${SANDBOX_SUBNET:-172.31.240.0/24}
 TRANSPARENT_PORT=${SANDBOX_TRANSPARENT_PORT:-8082}
 DNS_PORT=${SANDBOX_DNS_PORT:-53}
 CAPTURE_PORTS=${SANDBOX_CAPTURE_PORTS:-80,443}
+CONFDIR=${SANDBOX_CONFDIR:-/var/lib/mitmproxy}
+CA_SRC=${SANDBOX_CA_PEM:-/etc/ssl/private/dev.pem}
+
+# Seed mitmproxy's confdir from the CA baked into the image at build time.
+#
+# Copied rather than symlinked, and into a dedicated directory rather than
+# /etc/ssl/private: mitmproxy writes mitmproxy-dhparam.pem alongside its CA on
+# startup, so the confdir has to be writable by the user the base image's
+# docker-entrypoint.sh gosu-drops to. /etc/ssl/private stays 0700 root.
+#
+# Without this, mitmproxy would silently generate its own throwaway CA and
+# nothing in the workload image would trust it.
+if [ -s "$CA_SRC" ]; then
+    PROXY_USER=${SANDBOX_PROXY_USER:-mitmproxy}
+    id "$PROXY_USER" >/dev/null 2>&1 || PROXY_USER=${SANDBOX_PROXY_UID:-1000}
+
+    mkdir -p "$CONFDIR"
+    cp "$CA_SRC" "$CONFDIR/mitmproxy-ca.pem"
+    chown -R "$PROXY_USER" "$CONFDIR"
+    chmod 0700 "$CONFDIR"
+    chmod 0600 "$CONFDIR/mitmproxy-ca.pem"
+    echo "proxy: CA seeded into $CONFDIR from $CA_SRC"
+else
+    echo "proxy: $CA_SRC missing; mitmproxy will mint a CA the workload does not trust" >&2
+fi
 
 if [ "${SANDBOX_TRANSPARENT:-1}" = "1" ]; then
     if ! command -v iptables >/dev/null 2>&1; then

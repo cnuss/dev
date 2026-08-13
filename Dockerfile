@@ -48,6 +48,36 @@ COPY .claude .claude
 RUN .claude/install.sh
 # DEVNOTE TEMP SKIP SBOM
 
+# The dev certificate, minted in isolation so the assembled image never needs
+# openssl at build time and the material can be cached independently.
+FROM ${BASE_IMAGE} AS ssl
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /usr/local/share/ca-certificates
+
+# A single dual-purpose dev certificate: usable as a signing CA *and* directly
+# as a server or client certificate, so one key pair covers every use.
+RUN openssl req -x509 -newkey rsa:4096 -sha256 -nodes \
+    -days "3650" \
+    -subj "/CN=dev" \
+    -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+    -addext "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign,cRLSign" \
+    -addext "extendedKeyUsage=serverAuth,clientAuth" \
+    -addext "subjectAltName=DNS:dev,DNS:localhost,DNS:host.docker.internal,DNS:*.dev.local,DNS:*.test.local,DNS:*.svc.cluster.local,IP:127.0.0.1,IP:0:0:0:0:0:0:0:1" \
+    -keyout /etc/ssl/private/dev.key \
+    -out /usr/local/share/ca-certificates/dev.crt && \
+    cat /etc/ssl/private/dev.key \
+    /usr/local/share/ca-certificates/dev.crt \
+    >/etc/ssl/private/dev.pem && \
+    openssl pkcs12 -export -passout pass: -name dev \
+    -inkey /etc/ssl/private/dev.key \
+    -in /usr/local/share/ca-certificates/dev.crt \
+    -out /etc/ssl/private/dev.p12 && \
+    chmod 0600 /etc/ssl/private/dev.key /etc/ssl/private/dev.pem /etc/ssl/private/dev.p12 && \
+    chmod 0644 /usr/local/share/ca-certificates/dev.crt
+
 FROM python:3.11-slim AS sbom
 ARG SBOM_NAME=dev
 ARG SBOM_AUTHOR=local
@@ -57,7 +87,7 @@ COPY --from=bins apt.spdx.json /sboms/
 COPY --from=homebrew /home/ubuntu/brew.spdx.json /sboms/
 RUN mkdir /out && pip install --no-cache-dir spdxmerge && \
     spdxmerge --docpath /sboms/ --outpath /out/ --mergetype 1 --name "$SBOM_NAME" --filetype J \
-      --author "$SBOM_AUTHOR" --email "$SBOM_EMAIL" --docnamespace "$SBOM_NAMESPACE"
+    --author "$SBOM_AUTHOR" --email "$SBOM_EMAIL" --docnamespace "$SBOM_NAMESPACE"
 
 FROM ${BASE_IMAGE} AS combined
 COPY --from=bins / /
@@ -67,11 +97,13 @@ COPY --from=homebrew /usr/local/bin/ /usr/local/bin/
 COPY --from=homebrew /usr/local/lib/ /usr/local/lib/
 COPY --from=homebrew /usr/local/share/ /usr/local/share/
 COPY --from=homebrew /home/linuxbrew/.linuxbrew/lib/ld.so /home/linuxbrew/.linuxbrew/lib/ld.so
+COPY --from=ssl /etc/ssl/ /etc/ssl/
+COPY --from=ssl /usr/local/share/ca-certificates/ /usr/local/share/ca-certificates/
 COPY --from=sbom /out/merged-SBoM-deep.json /usr/local/share/sbom/sbom.spdx.json
 COPY .bin/noded /usr/local/bin/noded
 RUN chmod 0755 /usr/local/bin/noded
 
-RUN rm -rf /tmp/* && ldconfig
+RUN rm -rf /tmp/* && ldconfig && update-ca-certificates
 
 FROM scratch AS smoke-test
 # single layer output simulation

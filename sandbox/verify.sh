@@ -130,7 +130,12 @@ else
     bad "https://$ALLOWED_HOST returned '$code'"
 fi
 
-if curl -s -o /dev/null --max-time 20 --cacert /certs/ca-cert.pem "https://$ALLOWED_HOST/"; then
+# --cacert with the sandbox CA *alone* is the point: the system store also
+# holds the public roots, so verifying against it would pass whether or not the
+# connection was re-terminated.
+if curl -s -o /dev/null --max-time 20 \
+        --cacert /usr/local/share/ca-certificates/dev.crt \
+        "https://$ALLOWED_HOST/"; then
     ok "chain verifies against the sandbox CA alone (TLS is re-terminated)"
 else
     bad "the sandbox CA does not verify the connection" "expected interception"

@@ -9,6 +9,17 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends iptables \
     && rm -rf /var/lib/apt/lists/*
 
+# The interception CA, taken from the workload image so both sides share one
+# CA without a runtime volume. compose wires this context as `ca: service:dev`;
+# building this Dockerfile standalone requires
+# --build-context ca=docker-image://cnuss/dev:sandbox.
+#
+# Only the key+cert pair is copied. The CA is deliberately NOT added to this
+# image's trust store: the proxy verifies its upstream connections against the
+# real public roots, and trusting its own interception CA would defeat that.
+COPY --from=ca /etc/ssl/private/dev.pem /etc/ssl/private/dev.pem
+RUN chmod 0600 /etc/ssl/private/dev.pem
+
 COPY sandbox_proxy.py /opt/sandbox/sandbox_proxy.py
 COPY healthcheck.py /opt/sandbox/healthcheck.py
 COPY entrypoint.sh /opt/sandbox/entrypoint.sh
@@ -18,6 +29,7 @@ ENV SANDBOX_LISTEN_PORT=8080 \
     SANDBOX_STATUS_PORT=8081 \
     SANDBOX_TRANSPARENT_PORT=8082 \
     SANDBOX_DNS_PORT=53 \
+    SANDBOX_CONFDIR=/var/lib/mitmproxy \
     SANDBOX_ALLOWLIST=/etc/sandbox/allowlist.txt
 
 EXPOSE 8080 8081 8082 53/udp
@@ -40,9 +52,10 @@ ENTRYPOINT ["/opt/sandbox/entrypoint.sh"]
 # Binding 53 as the non-root mitmproxy user needs
 # net.ipv4.ip_unprivileged_port_start=0, set on the service in compose.
 #
-# confdir=/certs uses the CA the `ca` service minted instead of generating a
-# throwaway one on first run. mitmproxy also writes mitmproxy-dhparam.pem
-# there, so /certs is chowned to the same uid.
+# confdir is a writable scratch dir the entrypoint seeds with the baked CA,
+# rather than /etc/ssl/private itself: mitmproxy writes mitmproxy-dhparam.pem
+# into its confdir on startup, and that directory must not become writable by
+# the dropped-privilege user.
 #
 # connection_strategy=lazy keeps mitmproxy from dialling upstream before the
 # addon has had its chance to reject the request.
@@ -54,7 +67,7 @@ CMD ["mitmdump", \
      "--mode", "transparent@8082", \
      "--mode", "dns@53", \
      "--listen-host", "0.0.0.0", \
-     "--set", "confdir=/certs", \
+     "--set", "confdir=/var/lib/mitmproxy", \
      "--set", "connection_strategy=lazy", \
      "--set", "block_global=false", \
      "--set", "flow_detail=0", \
