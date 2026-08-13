@@ -102,7 +102,7 @@ See **[.bin/noded.md](.bin/noded.md)** for the deployment manifest, credential m
 
 ### General
 
-`git`, `zsh`, `vim`, `less`, `busybox`, `tar`, `gzip`, `bzip2`, `xz`, `unzip`, `sudo`
+`git`, `gh` (GitHub CLI), `zsh`, `vim`, `less`, `busybox`, `tar`, `gzip`, `bzip2`, `xz`, `unzip`, `sudo`
 
 ### AI
 
@@ -123,6 +123,30 @@ The Dockerfile uses a multi-stage build:
 5. **combined** - Merges all stages; ships the SBOM at `/usr/local/share/sbom/sbom.spdx.json`
 6. **smoke-test** - Validates all tools work
 7. **final** - Clean single-layer output image; `/bin/zsh` is the build `SHELL`, and the default `CMD` is `sleep infinity` so the container idles for `kubectl exec` / `docker exec` instead of exiting
+
+## Network Sandbox
+
+`docker-compose.yml` runs this image with the same network confinement as
+Claude Code's hosted environment: the container's only route is a proxy that
+intercepts `:80`/`:443`/`:53` transparently and re-terminates TLS with its own
+CA. Docker adds no NAT rule for the sandbox subnet, so there is no path out
+that skips it.
+
+```bash
+docker compose up -d                     # builds ./Dockerfile — not quick
+docker compose exec dev sandbox-verify   # assert the boundary holds
+docker compose exec dev zsh
+```
+
+`:80`, `:443` and `:53` are redirected onto the proxy regardless of client
+configuration, so tools that ignore `HTTPS_PROXY` are intercepted rather than
+broken — the hosted environment's arrangement.
+
+Egress policy is `sandbox/allowlist.txt`, re-read live, governing connections
+and name resolution alike. It ships as `*` (open) because that is what the
+hosted environment measurably does; delete the `*` for deny-by-default. See
+**[sandbox/README.md](sandbox/README.md)** for the measurements, the knobs, and
+the protocols a proxy of this shape cannot carry.
 
 ## CI/CD
 

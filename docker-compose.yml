@@ -1,0 +1,190 @@
+name: dev-sandbox
+
+# Runs this repo's image under the same network confinement as Claude Code's
+# hosted environment:
+#
+#   [ dev ] --(routable, no NAT)--> [ proxy ] --(bridge, NAT)--> internet
+#
+# `dev` routes everything at the proxy, which intercepts :80/:443/:53
+# transparently and forwards nothing else. Docker adds no NAT rule for the
+# sandbox subnet, so there is no path out that does not go through mitmproxy —
+# see the `networks:` block at the bottom for why this is not `internal: true`.
+#
+# Supporting pieces live in sandbox/; see sandbox/README.md.
+
+x-sandbox-noproxy: &noproxy "localhost,127.0.0.1,::1,127.0.0.0/8,proxy,host.docker.internal,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
+x-sandbox-proxy: &proxy-url "http://proxy:8080"
+
+services:
+  # The policy enforcement point. Two legs: `sandbox` (where the workload can
+  # reach it) and `egress` (where it can reach the internet).
+  proxy:
+    build:
+      context: ./sandbox/proxy
+      args:
+        MITMPROXY_IMAGE: ${SANDBOX_MITMPROXY_IMAGE:-mitmproxy/mitmproxy:12.2.3}
+      # Both sides need the same interception CA. It is minted at build time in
+      # `dev`'s Dockerfile, so the proxy takes it from that image rather than
+      # from a runtime volume. This is a build-order dependency only — at run
+      # time the arrow points the other way (`dev` waits on `proxy`), so there
+      # is no cycle.
+      additional_contexts:
+        ca: service:dev
+    environment:
+      SANDBOX_ALLOWLIST: /etc/sandbox/allowlist.txt
+      # Ports the proxy will CONNECT to. Everything else is refused, matching
+      # the "non-443 HTTPS ports are not supported" rule upstream.
+      SANDBOX_ALLOWED_PORTS: ${SANDBOX_ALLOWED_PORTS:-443}
+      # Plain-HTTP (non-CONNECT, absolute-form) proxy requests get 405, the
+      # same way the real proxy rejects HTTP_PROXY-configured clients.
+      SANDBOX_ALLOW_PLAIN_HTTP: ${SANDBOX_ALLOW_PLAIN_HTTP:-0}
+      # Source subnet the transparent-capture rules match on. Matching on the
+      # subnet rather than an interface name because compose does not
+      # guarantee which of the proxy's two NICs is eth0.
+      SANDBOX_SUBNET: 172.31.240.0/24
+      # Set to 0 to run explicit-proxy-only, without the redirect.
+      SANDBOX_TRANSPARENT: ${SANDBOX_TRANSPARENT:-1}
+    volumes:
+      - ./sandbox/allowlist.txt:/etc/sandbox/allowlist.txt:ro
+    # NET_ADMIN to program the redirect; ip_forward so the kernel accepts
+    # packets the sandbox routes here. FORWARD policy is DROP and nothing is
+    # ever masqueraded, so forwarding grants no path out — every packet either
+    # lands on a listener in this container or dies.
+    cap_add:
+      - NET_ADMIN
+    # mitmproxy runs as a non-root user and has to bind :53 for the resolver.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
+      net.ipv4.ip_forward: 1
+    networks:
+      sandbox:
+        # Pinned: the workload's /etc/resolv.conf and /etc/hosts point here by
+        # address, so neither depends on Docker's embedded resolver.
+        ipv4_address: 172.31.240.10
+        priority: 10
+      egress:
+        # Higher priority wins the proxy's own default route. Without this the
+        # proxy might route its upstream traffic over `sandbox`, which has no
+        # NAT — mitmproxy would be unable to reach anything.
+        priority: 100
+    restart: unless-stopped
+
+  # The sandboxed workload: this repo's image, built from ./Dockerfile. Note it
+  # joins `sandbox` only.
+  #
+  # This is the full multi-stage build (homebrew, apt, claude, SBOM) — expect
+  # the first `up` to take a while. `docker compose up -d proxy` first if you
+  # only want the egress tier.
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: final
+      args:
+        BASE_IMAGE: ${SANDBOX_BASE_IMAGE:-ubuntu:26.04}
+    image: cnuss/dev:sandbox
+    depends_on:
+      proxy:
+        condition: service_healthy
+    # The image ships no ENTRYPOINT; this one pins the resolver and default
+    # route, then runs the normal CMD. Mounted rather than baked so the
+    # published image stays exactly what ./Dockerfile produces.
+    entrypoint: ["/usr/local/bin/sandbox-entrypoint"]
+    command: ["sleep", "infinity"]
+    environment:
+      HTTPS_PROXY: *proxy-url
+      https_proxy: *proxy-url
+      NO_PROXY: *noproxy
+      no_proxy: *noproxy
+      # Deliberately no HTTP_PROXY: only HTTPS_PROXY is served, and clients
+      # that fall back to plain HTTP should fail loudly rather than silently
+      # bypass the CONNECT path.
+      # All twelve point at the system store, which update-ca-certificates
+      # rebuilt at image build time as public roots + the sandbox CA — the same
+      # content the old /certs/ca-bundle.crt had. Several of these (CURL_CA_BUNDLE,
+      # SSL_CERT_FILE, GIT_SSL_CAINFO) restate the platform default and are kept
+      # only so the trust path stays explicit at a glance.
+      CURL_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
+      PIP_CERT: /etc/ssl/certs/ca-certificates.crt
+      AWS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+      GIT_SSL_CAINFO: /etc/ssl/certs/ca-certificates.crt
+      CARGO_HTTP_CAINFO: /etc/ssl/certs/ca-certificates.crt
+      DENO_CERT: /etc/ssl/certs/ca-certificates.crt
+      NIX_SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      HTTPLIB2_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
+      BUNDLE_SSL_CA_CERT: /etc/ssl/certs/ca-certificates.crt
+      npm_config_https_proxy: *proxy-url
+      npm_config_noproxy: *noproxy
+      YARN_HTTPS_PROXY: *proxy-url
+      GLOBAL_AGENT_HTTPS_PROXY: *proxy-url
+      GLOBAL_AGENT_NO_PROXY: *noproxy
+      # The entrypoint points /etc/resolv.conf here and installs a default
+      # route via the same address, which is what puts the proxy in the path
+      # of traffic from clients that ignore HTTPS_PROXY entirely.
+      SANDBOX_RESOLVER: 172.31.240.10
+      SANDBOX_GATEWAY: 172.31.240.10
+    volumes:
+      - ./sandbox/entrypoint.sh:/usr/local/bin/sandbox-entrypoint:ro
+      - ./sandbox/verify.sh:/usr/local/bin/sandbox-verify:ro
+      - work:/work
+    working_dir: /work
+    networks:
+      - sandbox
+    # `proxy` resolves from /etc/hosts, so HTTPS_PROXY keeps working after the
+    # entrypoint points /etc/resolv.conf at the filtering resolver — service
+    # discovery never has to survive the switch.
+    extra_hosts:
+      - "proxy:172.31.240.10"
+    # To replace Docker's default route with one via the proxy, which is what
+    # puts proxy-unaware traffic in front of the interceptor. Grants no path
+    # out: the sandbox subnet is not masqueraded, so routing around the proxy
+    # is a dead end.
+    cap_add:
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    # The command idles; exec into it.
+    stdin_open: true
+    tty: true
+
+networks:
+  # NOT `internal: true`, deliberately, and this is the subtle part.
+  #
+  # `internal` makes Docker program `-i br-X ! -d <subnet> -j DROP` on the host
+  # (libnetwork setupInternalNetworkRules). That drops every packet whose
+  # destination is off-subnet *at the bridge*, before it can reach the proxy —
+  # which is exactly the traffic a transparent gateway exists to intercept.
+  # The two features cannot coexist.
+  #
+  # So the subnet has to be routable, and what keeps traffic on the proxy is
+  # the routing: `dev` has exactly one default route and it points there.
+  #
+  # enable_ip_masquerade=false hardens that on native Linux — Docker adds no
+  # NAT rule for the subnet, so a root process that deliberately reroutes via
+  # the bridge gateway gets an unroutable private source and no return path.
+  # It buys nothing on Docker Desktop, whose VM masquerades everything leaving
+  # it regardless. Harmless either way; sandbox-verify reports which case you
+  # are in. Note the hosted environment has no such protection at all — its
+  # egress is a filter, and raw TCP to arbitrary IPs works there.
+  #
+  # If confinement matters more than fidelity: set SANDBOX_TRANSPARENT=0 and
+  # restore `internal: true` here. Nothing off-subnet can then leave the bridge
+  # at all, at the cost of proxy-unaware clients breaking instead of being
+  # intercepted.
+  sandbox:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+    ipam:
+      config:
+        - subnet: 172.31.240.0/24
+  egress:
+    driver: bridge
+
+volumes:
+  work:
