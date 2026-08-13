@@ -102,7 +102,7 @@ See **[.bin/noded.md](.bin/noded.md)** for the deployment manifest, credential m
 
 ### General
 
-`git`, `zsh`, `vim`, `less`, `busybox`, `tar`, `gzip`, `bzip2`, `xz`, `unzip`, `sudo`
+`git`, `gh` (GitHub CLI), `zsh`, `vim`, `less`, `busybox`, `tar`, `gzip`, `bzip2`, `xz`, `unzip`, `sudo`
 
 ### AI
 
