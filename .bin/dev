@@ -1,0 +1,16 @@
+#!/bin/sh
+# Default CMD for the image.
+#
+# Interactive (`kubectl debug -it pod --image=cnuss/dev`, `docker run -it`):
+# stdin is a tty, so drop straight into zsh.
+#
+# Headless (a sidecar, `kubectl run` without -t): a shell would read EOF and
+# exit, completing the container. Idle instead so it stays up for
+# `kubectl exec` / `docker exec`.
+#
+# Kept as CMD rather than ENTRYPOINT so `kubectl run ... -- zsh` and a pod
+# spec's `command:` still replace it outright.
+if [ -t 0 ]; then
+    exec /bin/zsh -l
+fi
+exec sleep infinity

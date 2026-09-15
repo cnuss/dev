@@ -97,8 +97,8 @@ jobs:
   smoke-amd:
     needs: build-amd
     runs-on: ubuntu-24.04
-    # A hung smoke (e.g. noded holding on a failure) must fail fast, not sit for
-    # the 6h default and block the run.
+    # A hung smoke (e.g. a helper that idles instead of exiting) must fail fast,
+    # not sit for the 6h default and block the run.
     timeout-minutes: 10
     container:
       image: ghcr.io/${{ github.repository }}:amd-sha-${{ github.sha }}
