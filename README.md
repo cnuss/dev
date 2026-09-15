@@ -9,14 +9,17 @@ A containerized development environment with Kubernetes tools, networking utilit
 docker run -it cnuss/dev
 
 # Kubernetes
-kubectl run dev --rm -it --image=cnuss/dev -- zsh
+kubectl run dev --rm -it --image=cnuss/dev
+
+# Ephemeral debug container in an existing pod
+kubectl debug -it some-pod --image=cnuss/dev
 ```
 
 Also available from GitHub Container Registry:
 
 ```bash
 docker run -it ghcr.io/cnuss/dev
-kubectl run dev --rm -it --image=ghcr.io/cnuss/dev -- zsh
+kubectl run dev --rm -it --image=ghcr.io/cnuss/dev
 ```
 
 ## What's Included
@@ -94,12 +97,6 @@ nsenter --target 1 --mount --uts --ipc --net --pid -- ip addr
 
 `util-linux` is `Essential` in the Ubuntu base, but it's pinned in `.apt/packages` and smoke-tested so a slimmer `BASE_IMAGE` can't silently drop it.
 
-### Node Host Access (`noded`)
-
-`noded` shells from the privileged `debug: true` sidecar onto the underlying flex-node EC2 host — the container shares the host's network namespace, so the host sshd is reachable at `127.0.0.1:22` even though `nsenter` can't reach the host (its PID/mount namespaces belong to the `kube1` nspawn machine). The image bakes `NODED_PROVISION=1` and `NODED_KEEPALIVE=1`, so a sidecar needs only `command: ["noded"]` plus a read-write `/etc/ssh` hostPath to self-provision host trust and land on the node.
-
-See **[.bin/noded.md](.bin/noded.md)** for the deployment manifest, credential modes (self-provision / step-ca / key), the `s` vs `a` distinction, and the full environment reference.
-
 ### General
 
 `git`, `zsh`, `vim`, `less`, `busybox`, `tar`, `gzip`, `bzip2`, `xz`, `unzip`, `sudo`
@@ -122,7 +119,7 @@ The Dockerfile uses a multi-stage build:
 4. **sbom** - Merges the per-stage Syft SPDX scans into a single SBOM
 5. **combined** - Merges all stages; ships the SBOM at `/usr/local/share/sbom/sbom.spdx.json`
 6. **smoke-test** - Validates all tools work
-7. **final** - Clean single-layer output image; `/bin/zsh` is the build `SHELL`, and the default `CMD` is `sleep infinity` so the container idles for `kubectl exec` / `docker exec` instead of exiting
+7. **final** - Clean single-layer output image; the default `CMD` is `dev`, which opens zsh when stdin is a tty (`kubectl debug -it`, `docker run -it`) and otherwise idles so the container stays up for `kubectl exec` / `docker exec` instead of exiting
 
 ## CI/CD
 

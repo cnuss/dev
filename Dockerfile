@@ -38,6 +38,7 @@ COPY --from=syft /syft /tmp/syft
 COPY .apt .apt
 RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN .apt/install.sh
+COPY .bin/dev /usr/local/bin/dev
 RUN /tmp/syft scan / --source-name apt --source-version latest --override-default-catalogers dpkg-db-cataloger -o spdx-json=apt.spdx.json
 
 FROM ${BASE_IMAGE} AS claude
@@ -68,8 +69,6 @@ COPY --from=homebrew /usr/local/lib/ /usr/local/lib/
 COPY --from=homebrew /usr/local/share/ /usr/local/share/
 COPY --from=homebrew /home/linuxbrew/.linuxbrew/lib/ld.so /home/linuxbrew/.linuxbrew/lib/ld.so
 COPY --from=sbom /out/merged-SBoM-deep.json /usr/local/share/sbom/sbom.spdx.json
-COPY .bin/noded /usr/local/bin/noded
-RUN chmod 0755 /usr/local/bin/noded
 
 RUN rm -rf /tmp/* && ldconfig
 
@@ -78,7 +77,6 @@ FROM scratch AS smoke-test
 ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     LD_LIBRARY_PATH="/usr/local/lib"
 COPY --from=combined / /
-SHELL [ "/bin/zsh", "-c" ]
 
 COPY . .
 RUN .apt/smoke.sh
@@ -90,15 +88,7 @@ FROM scratch AS final
 # single layer output
 ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     LD_LIBRARY_PATH="/usr/local/lib"
-# noded defaults for the flex-node debug sidecar: self-provision host trust via a
-# hostPath /etc/ssh, and keepalive so `command: ["noded"]` as PID1 doesn't
-# CrashLoopBackOff before the node is reachable. Explicit NODED_CA_URL/NODED_KEY
-# still win (self-provision is the last-resort credential source), and the CMD
-# default is `sleep infinity`, so these only take effect when noded is run.
-# Set here rather than in the combined/smoke-test stage so the smoke tests, which
-# assert the no-keepalive exit path, keep running with a clean environment.
-ENV NODED_PROVISION=1 \
-    NODED_KEEPALIVE=1
 COPY --from=combined / /
-SHELL [ "/bin/zsh", "-c" ]
-CMD ["sleep", "infinity"]
+# `dev` opens zsh when stdin is a tty (kubectl debug -it, docker run -it) and
+# idles otherwise, so a headless pod stays up for exec.
+CMD ["dev"]

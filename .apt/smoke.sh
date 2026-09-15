@@ -16,3 +16,4 @@ bgpq4 -v
 nsenter --version
 unshare --version
 lsns --version
+ssh -V
