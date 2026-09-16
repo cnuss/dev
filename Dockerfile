@@ -43,12 +43,10 @@ COPY .bin/dev /usr/local/bin/dev
 RUN /tmp/syft scan / --source-name apt --source-version latest --override-default-catalogers dpkg-db-cataloger -o spdx-json=apt.spdx.json
 
 FROM ${BASE_IMAGE} AS claude
-COPY --from=syft /syft /tmp/syft
-
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y curl ca-certificates jq && rm -rf /var/lib/apt/lists/*
 COPY .claude .claude
 RUN .claude/install.sh
-# DEVNOTE TEMP SKIP SBOM
+RUN .claude/sbom.sh > claude.spdx.json
 
 FROM python:3.11-slim AS sbom
 ARG SBOM_NAME=dev
@@ -56,6 +54,7 @@ ARG SBOM_AUTHOR=local
 ARG SBOM_EMAIL=local@localhost
 ARG SBOM_NAMESPACE=https://local
 COPY --from=bins apt.spdx.json /sboms/
+COPY --from=claude claude.spdx.json /sboms/
 COPY --from=homebrew /home/ubuntu/brew.spdx.json /sboms/
 RUN mkdir /out && pip install --no-cache-dir spdxmerge && \
     spdxmerge --docpath /sboms/ --outpath /out/ --mergetype 1 --name "$SBOM_NAME" --filetype J \
@@ -64,7 +63,6 @@ RUN mkdir /out && pip install --no-cache-dir spdxmerge && \
 FROM ${BASE_IMAGE} AS combined
 COPY --from=bins / /
 COPY --from=claude /usr/local/bin/claude /usr/local/bin/claude
-COPY --from=claude /root/.claude/ /root/.claude/
 COPY --from=homebrew /usr/local/bin/ /usr/local/bin/
 COPY --from=homebrew /usr/local/lib/ /usr/local/lib/
 COPY --from=homebrew /usr/local/share/ /usr/local/share/

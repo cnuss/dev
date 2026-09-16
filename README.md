@@ -115,8 +115,8 @@ The Dockerfile uses a multi-stage build:
 
 1. **homebrew** - Installs tools from `Brewfile` via Homebrew, copies binaries and shared libs
 2. **bins** - Installs system packages from `.apt/packages` (with extra apt repos from `.apt/sources/`)
-3. **claude** - Installs the Claude CLI
-4. **sbom** - Merges the per-stage Syft SPDX scans into a single SBOM
+3. **claude** - Downloads the Claude CLI release binary (version from `.claude/version`, sha256-verified against the release manifest) and writes its own SPDX entry
+4. **sbom** - Merges the per-stage SPDX documents into a single SBOM
 5. **combined** - Merges all stages; ships the SBOM at `/usr/local/share/sbom/sbom.spdx.json`
 6. **smoke-test** - Validates all tools work
 7. **final** - Clean single-layer output image; the default `CMD` is `dev`, which opens zsh when stdin is a tty (`kubectl debug -it`, `docker run -it`) and otherwise idles so the container stays up for `kubectl exec` / `docker exec` instead of exiting
