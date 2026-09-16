@@ -1,0 +1,4 @@
+gpg=https://dl.google.com/linux/linux_signing_key.pub
+uri=https://dl.google.com/linux/chrome/deb/
+suite=stable
+components=main

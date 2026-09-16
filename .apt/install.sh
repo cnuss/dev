@@ -12,10 +12,11 @@ ARCH="$(dpkg --print-architecture)"
 CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
 for src in "$SCRIPT_DIR"/sources/*; do
     name="$(basename "$src")"
+    suite=""
     . "$src"
     curl -fsSL "$gpg" -o "/etc/apt/keyrings/${name}.asc"
     chmod a+r "/etc/apt/keyrings/${name}.asc"
-    echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/${name}.asc] ${uri} ${CODENAME} ${components}" > "/etc/apt/sources.list.d/${name}.list"
+    echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/${name}.asc] ${uri} ${suite:-$CODENAME} ${components}" > "/etc/apt/sources.list.d/${name}.list"
 done
 
 apt-get update

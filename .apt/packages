@@ -1,8 +1,8 @@
 bgpq4
 busybox
 bzip2
-curl
 ca-certificates
+curl
 dnsutils
 docker-ce-cli
 frr
@@ -30,5 +30,9 @@ unzip
 util-linux
 vim-tiny
 wget
+xpra
+xpra-html5
+xpra-x11
+xvfb
 xz-utils
 zsh
