@@ -1,6 +1,7 @@
 brew "cloudflared"
 brew "etcd"
 brew "fzf"
+brew "gh"
 brew "jose"
 brew "jq"
 brew "jwt-cli"

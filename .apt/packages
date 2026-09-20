@@ -19,6 +19,7 @@ net-tools
 netcat-openbsd
 nmap
 openssh-client
+openssl
 socat
 sudo
 tar
