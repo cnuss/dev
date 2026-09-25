@@ -47,7 +47,9 @@ jobs:
           target: final
           platforms: linux/amd64
           pull: true
-          push: ${{ github.ref == 'refs/heads/latest' }}
+          # PRs push their per-commit tags too, so the smoke jobs below have an
+          # image to pull. Fork PRs can't write packages, so they only build.
+          push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
           # A cached scheduled run would reinstall the exact same packages and
           # defeat the point of rebuilding, so bypass the cache on cron.
           no-cache: ${{ github.event_name == 'schedule' }}
@@ -68,7 +70,9 @@ jobs:
           context: .
           target: full
           platforms: linux/amd64
-          push: ${{ github.ref == 'refs/heads/latest' }}
+          # PRs push their per-commit tags too, so the smoke jobs below have an
+          # image to pull. Fork PRs can't write packages, so they only build.
+          push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
           no-cache: ${{ github.event_name == 'schedule' }}
           tags: ghcr.io/${{ github.repository }}:amd-full-sha-${{ github.sha }}
           cache-from: |
@@ -104,7 +108,9 @@ jobs:
           target: final
           platforms: linux/arm64
           pull: true
-          push: ${{ github.ref == 'refs/heads/latest' }}
+          # PRs push their per-commit tags too, so the smoke jobs below have an
+          # image to pull. Fork PRs can't write packages, so they only build.
+          push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
           # A cached scheduled run would reinstall the exact same packages and
           # defeat the point of rebuilding, so bypass the cache on cron.
           no-cache: ${{ github.event_name == 'schedule' }}
@@ -125,7 +131,9 @@ jobs:
           context: .
           target: full
           platforms: linux/arm64
-          push: ${{ github.ref == 'refs/heads/latest' }}
+          # PRs push their per-commit tags too, so the smoke jobs below have an
+          # image to pull. Fork PRs can't write packages, so they only build.
+          push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
           no-cache: ${{ github.event_name == 'schedule' }}
           tags: ghcr.io/${{ github.repository }}:arm-full-sha-${{ github.sha }}
           cache-from: |
