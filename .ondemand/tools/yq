@@ -1,0 +1,6 @@
+# yq's checksums file packs every hash algorithm into columns; the
+# build-time hash is the pin.
+repo=mikefarah/yq
+bins="yq"
+complete_yq="yq shell-completion zsh"
+url() { echo "https://github.com/$repo/releases/download/$tag/yq_linux_$arch"; }

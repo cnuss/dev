@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# On-demand tools (README.md, "On-demand tools").
+#
+# /usr/local/bin/<tool> is a symlink to this script until first use. Invoked
+# under a tool's name it installs that tool's package from the build-time
+# lock (download, sha256-verify, swap the real binary over the symlink) and
+# then execs it, so every later call hits the real binary directly.
+#
+#   ondemand list                       # packages, versions, installed or not
+#   ondemand install <pkg|bin>...       # install now (alias: prefetch)
+#   ondemand install --all
+# shellcheck disable=SC2154  # bins/version/url/sha256 come from sourced .lock files
+set -euo pipefail
+
+SHARE=/usr/local/share/ondemand
+BIN=/usr/local/bin
+ZSH_FUNCS=/usr/local/share/zsh/site-functions
+# Artifacts staged here are used instead of downloading (build-time cache
+# for the smoke test and the :full image).
+CACHE="${ONDEMAND_CACHE:-/var/cache/ondemand}"
+# Where binaries go when /usr/local/bin can't be written (read-only root
+# filesystem, no sudo). The stub keeps working from here.
+FALLBACK="${ONDEMAND_HOME:-${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/ondemand}/bin"
+# Last resort when $HOME isn't writable either.
+FALLBACK_TMP="/tmp/ondemand-$(id -u)/bin"
+
+die() { echo "ondemand: $*" >&2; exit 1; }
+
+as_root() {
+    if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n "$@"; fi
+}
+
+# Package that provides a binary, via $SHARE/bins/<bin> -> ../<pkg>.lock
+pkg_of() {
+    local link="$SHARE/bins/$1"
+    [ -L "$link" ] || return 1
+    local target
+    target="$(readlink "$link")"
+    target="${target##*/}"
+    echo "${target%.lock}"
+}
+
+# Where a bin's real executable lives, if installed.
+installed_path() {
+    if [ -e "$BIN/$1" ] && [ ! -L "$BIN/$1" ]; then
+        echo "$BIN/$1"
+    elif [ -x "$FALLBACK/$1" ]; then
+        echo "$FALLBACK/$1"
+    elif [ -x "$FALLBACK_TMP/$1" ]; then
+        echo "$FALLBACK_TMP/$1"
+    else
+        return 1
+    fi
+}
+
+# Fetch a URL into $2, preferring the build cache, then check its sha256.
+fetch_verified() {
+    local url="$1" out="$2" sha="$3"
+    local cached="$CACHE/${url##*/}"
+    if [ -f "$cached" ]; then
+        cp "$cached" "$out"
+    else
+        curl -fsSL --retry 3 -o "$out" "$url" || die "download failed: $url"
+    fi
+    echo "$sha  $out" | sha256sum -c --quiet >/dev/null 2>&1 \
+        || die "sha256 mismatch for $url (expected $sha)"
+}
+
+# Put one file at $BIN/<name>, atomically; fall back to $FALLBACK.
+place() {
+    local src="$1" name="$2" mode="$3"
+    if as_root install -m "$mode" "$src" "$BIN/.$name.ondemand" 2>/dev/null \
+        && as_root mv -f "$BIN/.$name.ondemand" "$BIN/$name" 2>/dev/null; then
+        return 0
+    fi
+    as_root rm -f "$BIN/.$name.ondemand" 2>/dev/null || true
+    local dir="$FALLBACK"
+    mkdir -p "$dir" 2>/dev/null || { dir="$FALLBACK_TMP"; mkdir -p "$dir"; }
+    install -m "$mode" "$src" "$dir/$name"
+    echo "ondemand: $BIN not writable, installed $name to $dir" >&2
+}
+
+install_completion() {
+    local bin="$1" work="$2" cmd_var="complete_$1" url_var="complete_url_$1" sha_var="complete_sha256_$1"
+    local out="$work/_$bin"
+    if [ -n "${!url_var:-}" ]; then
+        fetch_verified "${!url_var}" "$out" "${!sha_var}"
+    elif [ -n "${!cmd_var:-}" ]; then
+        # Run the freshly installed binary, wherever it landed.
+        local path words
+        path="$(installed_path "$bin")" || return 0
+        read -ra words <<< "${!cmd_var}"
+        words[0]="$path"
+        "${words[@]}" > "$out" 2>/dev/null || return 0
+    else
+        return 0
+    fi
+    # Best effort: a missing completion never fails the install, and only a
+    # real zsh completion (not a help screen) is installed.
+    head -c 8 "$out" | grep -q '^#compdef' || return 0
+    as_root install -m 0644 "$out" "$ZSH_FUNCS/_$bin" 2>/dev/null || true
+}
+
+install_pkg() {
+    local pkg="$1" lock="$SHARE/$1.lock"
+    [ -f "$lock" ] || die "unknown package: $pkg"
+
+    # Serialize concurrent first runs of the same package.
+    local lockfile="/tmp/ondemand-$pkg.lock"
+    ( umask 0; : >> "$lockfile" ) 2>/dev/null || true
+    exec 9>>"$lockfile"
+    flock 9
+
+    (
+        # shellcheck source=/dev/null
+        . "$lock"
+        local bin all=1
+        for bin in $bins; do
+            installed_path "$bin" >/dev/null || all=0
+        done
+        [ "$all" -eq 0 ] || exit 0
+
+        echo "ondemand: installing $pkg $version" >&2
+        work="$(mktemp -d)"
+        trap 'rm -rf "$work"' EXIT
+        artifact="$work/${url##*/}"
+        fetch_verified "$url" "$artifact" "$sha256"
+
+        mkdir "$work/x"
+        case "$artifact" in
+            *.tar.gz|*.tgz) tar -xzf "$artifact" -C "$work/x" ;;
+            *.tar.xz)       tar -xJf "$artifact" -C "$work/x" ;;
+            *.zip)          unzip -q "$artifact" -d "$work/x" ;;
+            *)              cp "$artifact" "$work/x/$bins" ;;
+        esac
+
+        for bin in $bins; do
+            src="$(find "$work/x" -type f -name "$bin" | head -n1)"
+            [ -n "$src" ] || die "$bin not found in ${url##*/}"
+            place "$src" "$bin" 0755
+        done
+        for bin in $bins; do
+            install_completion "$bin" "$work"
+        done
+    )
+    exec 9>&-
+}
+
+all_pkgs() {
+    local f
+    for f in "$SHARE"/*.lock; do
+        [ -e "$f" ] || continue
+        f="${f##*/}"
+        echo "${f%.lock}"
+    done
+}
+
+cmd_list() {
+    local pkg
+    for pkg in $(all_pkgs); do
+        (
+            # shellcheck source=/dev/null
+            . "$SHARE/$pkg.lock"
+            state=installed
+            for bin in $bins; do
+                installed_path "$bin" >/dev/null || state=on-demand
+            done
+            printf '%-12s %-12s %-10s %s\n' "$pkg" "$version" "$state" "$bins"
+        )
+    done
+}
+
+cmd_install() {
+    [ "$#" -gt 0 ] || die "usage: ondemand install <pkg|bin>... | --all"
+    local arg pkg pkgs=()
+    if [ "$1" = --all ]; then
+        mapfile -t pkgs < <(all_pkgs)
+    else
+        for arg in "$@"; do
+            if [ -f "$SHARE/$arg.lock" ]; then
+                pkgs+=("$arg")
+            elif pkg="$(pkg_of "$arg")"; then
+                pkgs+=("$pkg")
+            else
+                die "unknown package or binary: $arg"
+            fi
+        done
+    fi
+    for pkg in "${pkgs[@]}"; do
+        install_pkg "$pkg"
+    done
+}
+
+self="${0##*/}"
+if [ "$self" = ondemand ]; then
+    case "${1:-}" in
+        list) cmd_list ;;
+        install|prefetch) shift; cmd_install "$@" ;;
+        *) sed -n '2,11s/^# \{0,1\}//p' "$0" >&2; exit 64 ;;
+    esac
+    exit 0
+fi
+
+# Invoked as a tool.
+if path="$(installed_path "$self")"; then
+    exec "$path" "$@"
+fi
+pkg="$(pkg_of "$self")" || die "no on-demand package provides $self"
+install_pkg "$pkg"
+path="$(installed_path "$self")" || die "$self still missing after installing $pkg"
+exec "$path" "$@"

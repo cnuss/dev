@@ -1,0 +1,6 @@
+# Tailscale's binaries come from pkgs.tailscale.com, not GitHub releases.
+bins="tailscale tailscaled"
+complete_tailscale="tailscale completion zsh"
+latest() { curl -fsSL 'https://pkgs.tailscale.com/stable/?mode=json' | jq -r .TarballsVersion; }
+url() { echo "https://pkgs.tailscale.com/stable/tailscale_${version}_$arch.tgz"; }
+checksums() { echo "$(url).sha256"; }

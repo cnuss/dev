@@ -1,0 +1,10 @@
+repo=ahmetb/kubectx
+bins="kubectx"
+url() {
+    local a=$arch; [ "$a" = amd64 ] && a=x86_64
+    echo "https://github.com/$repo/releases/download/$tag/kubectx_${tag}_linux_$a.tar.gz"
+}
+checksums() { echo "https://github.com/$repo/releases/download/$tag/checksums.txt"; }
+# The binaries have no completion subcommand; take the repo's file at the
+# same tag (hashed at build time like the tarball).
+complete_url_kubectx() { echo "https://raw.githubusercontent.com/$repo/$tag/completion/_kubectx.zsh"; }

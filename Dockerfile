@@ -48,6 +48,14 @@ COPY .claude .claude
 RUN .claude/install.sh
 RUN .claude/sbom.sh > claude.spdx.json
 
+# On-demand tools: resolve versions and hash the artifacts now, ship only the
+# stubs + locks (see .ondemand/). /out/cache feeds the smoke test and :full.
+FROM ${BASE_IMAGE} AS ondemand
+RUN apt-get update && apt-get install -y curl ca-certificates jq && rm -rf /var/lib/apt/lists/*
+COPY .ondemand .ondemand
+RUN .ondemand/lock.sh /out
+RUN .ondemand/sbom.sh /out/share > ondemand.spdx.json
+
 FROM python:3.11-slim AS sbom
 ARG SBOM_NAME=dev
 ARG SBOM_AUTHOR=local
@@ -55,6 +63,7 @@ ARG SBOM_EMAIL=local@localhost
 ARG SBOM_NAMESPACE=https://local
 COPY --from=bins apt.spdx.json /sboms/
 COPY --from=claude claude.spdx.json /sboms/
+COPY --from=ondemand ondemand.spdx.json /sboms/
 COPY --from=homebrew /home/ubuntu/brew.spdx.json /sboms/
 RUN mkdir /out && pip install --no-cache-dir spdxmerge && \
     spdxmerge --docpath /sboms/ --outpath /out/ --mergetype 1 --name "$SBOM_NAME" --filetype J \
@@ -67,6 +76,9 @@ COPY --from=homebrew /usr/local/bin/ /usr/local/bin/
 COPY --from=homebrew /usr/local/lib/ /usr/local/lib/
 COPY --from=homebrew /usr/local/share/ /usr/local/share/
 COPY --from=homebrew /home/linuxbrew/.linuxbrew/lib/ld.so /home/linuxbrew/.linuxbrew/lib/ld.so
+COPY --from=ondemand /out/share/ /usr/local/share/ondemand/
+COPY --from=ondemand /out/bin/ /usr/local/bin/
+COPY .ondemand/ondemand /usr/local/bin/ondemand
 COPY --from=sbom /out/merged-SBoM-deep.json /usr/local/share/sbom/sbom.spdx.json
 
 RUN rm -rf /tmp/* && ldconfig
@@ -82,7 +94,24 @@ COPY . .
 RUN .apt/smoke.sh
 RUN .claude/smoke.sh
 RUN .homebrew/smoke.sh
+RUN .ondemand/smoke.sh
+# First run of each tool goes through its stub, installing from the build
+# cache — the whole download/verify/swap/exec path, no second download.
+RUN --mount=type=bind,from=ondemand,source=/out/cache,target=/var/cache/ondemand \
+    .ondemand/smoke-tools.sh
 RUN .bin/smoke.sh
+
+# `:full` — every on-demand tool installed, for clusters without egress.
+# Kept before `final` so a plain `docker build .` still produces the slim
+# image. Keep ENV/CMD in step with `final`.
+FROM scratch AS full
+ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    LD_LIBRARY_PATH="/usr/local/lib" \
+    PIPX_DEFAULT_PYTHON=/usr/bin/python3
+COPY --from=combined / /
+RUN --mount=type=bind,from=ondemand,source=/out/cache,target=/var/cache/ondemand \
+    ondemand install --all
+CMD ["dev"]
 
 FROM scratch AS final
 # single layer output
