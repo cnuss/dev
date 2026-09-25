@@ -3,11 +3,13 @@ busybox
 bzip2
 ca-certificates
 curl
+dbus
 dnsutils
 docker-ce-cli
 frr
 frr-pythontools
 git
+gnome-menus
 gzip
 hostname
 iproute2

@@ -102,6 +102,9 @@ jobs:
     timeout-minutes: 10
     container:
       image: ghcr.io/${{ github.repository }}:amd-sha-${{ github.sha }}
+      # The image runs as ubuntu; the runner's /__w mounts are host-owned, so
+      # steps need root to check out. Smokes that care hop to ubuntu themselves.
+      options: --user root
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -117,6 +120,9 @@ jobs:
 
       - name: Claude smoke test
         run: .claude/smoke.sh
+
+      - name: Zsh smoke test
+        run: .zsh/smoke.sh
 
       - name: Image helper smoke test
         run: .bin/smoke.sh
@@ -127,6 +133,7 @@ jobs:
     timeout-minutes: 10
     container:
       image: ghcr.io/${{ github.repository }}:arm-sha-${{ github.sha }}
+      options: --user root
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -142,6 +149,9 @@ jobs:
 
       - name: Claude smoke test
         run: .claude/smoke.sh
+
+      - name: Zsh smoke test
+        run: .zsh/smoke.sh
 
       - name: Image helper smoke test
         run: .bin/smoke.sh
@@ -280,6 +290,7 @@ jobs:
     timeout-minutes: 10
     container:
       image: ${{ github.repository }}:latest
+      options: --user root
     steps:
       - name: Checkout smoke scripts
         uses: actions/checkout@v6
@@ -292,6 +303,9 @@ jobs:
 
       - name: Claude smoke test
         run: .claude/smoke.sh
+
+      - name: Zsh smoke test
+        run: .zsh/smoke.sh
 
       - name: Image helper smoke test
         run: .bin/smoke.sh

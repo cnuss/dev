@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# On-demand Chrome, served through xpra's HTML5 client on :14500.
+#
+#   chrome                      # open http://localhost:14500
+#   chrome https://example.com  # args go to google-chrome
+#
+# Chrome and the Noto fonts aren't baked into the image (~600MB, Chrome
+# updates weekly); the first run installs them from apt, later runs skip
+# straight to launch. xpra exits when Chrome does.
+#
+# Seamless mode: xpra is the window manager, each Chrome window is a window
+# in the HTML5 client (desktop mode + --kiosk left Chrome stuck at the
+# pre-connect 8192x4096 screen size). The client swaps ⌘ for Ctrl on macOS by
+# itself and draws 1:1 in CSS pixels (no HiDPI), so keep DPI at 96.
+set -e
+
+display="${XPRA_DISPLAY:-${DISPLAY:-:100}}"
+port="${XPRA_PORT:-14500}"
+
+pkgs=(google-chrome-stable fonts-noto-core fonts-noto-color-emoji fonts-noto-cjk)
+missing=()
+for pkg in "${pkgs[@]}"; do
+    dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || missing+=("$pkg")
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+    sudo apt-get update
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}"
+fi
+
+# Chrome's sandbox needs to clone user/pid/net namespaces and its renderers
+# want a real /dev/shm — Docker's defaults allow neither. docker-compose.yml
+# runs privileged with shm_size for that; on Kubernetes give the pod a
+# Memory-backed emptyDir at /dev/shm and a seccomp profile that permits
+# clone/unshare with namespace flags.
+chrome=(google-chrome-stable
+    --disable-gpu
+    --no-first-run
+    --no-default-browser-check
+    --password-store=basic
+    "$@")
+
+# Chrome probes the D-Bus system bus (UPower, NetworkManager, BlueZ…) and
+# logs an error per lookup when there's no bus at all. Give it one.
+[ -S /run/dbus/system_bus_socket ] || sudo dbus-daemon --system --fork
+
+# Already serving? Point a second launcher at the display: Chrome hands the
+# args to its running instance (new window) and exits, so xpra's child and
+# --exit-with-children are untouched.
+if xpra list 2>/dev/null | grep -q "LIVE session at $display\$"; then
+    exec env DISPLAY="$display" "${chrome[@]}"
+fi
+
+exec xpra start "$display" \
+    --daemon=no \
+    --bind-tcp="0.0.0.0:$port" \
+    --html=on \
+    --resize-display=yes \
+    --sharing=yes \
+    --dpi=96 \
+    --speaker=off \
+    --microphone=off \
+    --pulseaudio=no \
+    --clipboard=yes \
+    --clipboard-direction=both \
+    --exit-with-children=yes \
+    --start-child="$(printf '%q ' "${chrome[@]}")"

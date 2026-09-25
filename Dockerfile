@@ -39,7 +39,9 @@ COPY --from=syft /syft /tmp/syft
 COPY .apt .apt
 RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN .apt/install.sh
-COPY .bin/dev /usr/local/bin/dev
+COPY .bin/dev .bin/chrome /usr/local/bin/
+COPY .zsh .zsh
+RUN .zsh/install.sh
 RUN /tmp/syft scan / --source-name apt --source-version latest --override-default-catalogers dpkg-db-cataloger -o spdx-json=apt.spdx.json
 
 FROM ${BASE_IMAGE} AS claude
@@ -69,7 +71,10 @@ COPY --from=homebrew /usr/local/share/ /usr/local/share/
 COPY --from=homebrew /home/linuxbrew/.linuxbrew/lib/ld.so /home/linuxbrew/.linuxbrew/lib/ld.so
 COPY --from=sbom /out/merged-SBoM-deep.json /usr/local/share/sbom/sbom.spdx.json
 
-RUN rm -rf /tmp/* && ldconfig
+RUN rm -rf /tmp/* && ldconfig && \
+    echo "ubuntu ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ubuntu && chmod 0440 /etc/sudoers.d/ubuntu && \
+    install -d -m 0700 -o ubuntu -g ubuntu /run/user/1000 && \
+    dbus-uuidgen --ensure=/etc/machine-id && dbus-uuidgen --ensure && install -d /run/dbus
 
 FROM scratch AS smoke-test
 # single layer output simulation
@@ -81,6 +86,7 @@ COPY . .
 RUN .apt/smoke.sh
 RUN .claude/smoke.sh
 RUN .homebrew/smoke.sh
+RUN .zsh/smoke.sh
 RUN .bin/smoke.sh
 
 FROM scratch AS final
@@ -88,6 +94,17 @@ FROM scratch AS final
 ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     LD_LIBRARY_PATH="/usr/local/lib"
 COPY --from=combined / /
+USER ubuntu
+# No logind here to create the runtime dir; xpra, pulseaudio, dbus and ibus
+# all look for it, so provide it (created in `combined`).
+# BROWSER routes `gh -w`, `claude` login etc. through the chrome wrapper;
+# DISPLAY lets anything calling google-chrome directly land on its session.
+ENV HOME=/home/ubuntu \
+    SHELL=/bin/zsh \
+    XDG_RUNTIME_DIR=/run/user/1000 \
+    BROWSER=chrome \
+    DISPLAY=:100
+WORKDIR /home/ubuntu
 # `dev` opens zsh when stdin is a tty (kubectl debug -it, docker run -it) and
 # idles otherwise, so a headless pod stays up for exec.
 CMD ["dev"]

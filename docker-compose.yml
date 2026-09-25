@@ -1,0 +1,39 @@
+# Local build + run of the dev image.
+#
+#   docker compose up -d               # build if needed, run headless, ports mapped
+#   docker compose exec dev zsh        # attach whenever; `chrome` from here
+#   docker compose down                # stop (-v to also drop the home volume)
+#   docker compose build --no-cache    # force a fresh build
+services:
+  dev:
+    image: cnuss/dev:local
+    build: .
+    # `dev` (the image CMD) opens zsh when stdin is a tty and idles otherwise,
+    # so the same service works for `run` and `up -d` + `exec`.
+    stdin_open: true
+    tty: true
+    # sleep-as-PID1 ignores SIGTERM; tini forwards it so `down` is instant.
+    init: true
+    hostname: dev
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      # Chrome profile, zsh history, claude config… survive `down`. Docker
+      # seeds the volume from the image on first use; after that the image's
+      # /home/ubuntu (oh-my-zsh, .zshrc) is no longer what's mounted —
+      # `docker compose down -v` to reseed.
+      - home:/home/ubuntu
+    environment:
+      # passed through from the host shell when set
+      - ANTHROPIC_API_KEY
+    # All caps, no seccomp/apparmor: covers tcpdump/nmap/FRR/tailscaled and
+    # Chrome's namespace sandbox (see .bin/chrome).
+    privileged: true
+    # Chrome renderers need more than the 64MB default /dev/shm.
+    shm_size: 1gb
+    ports:
+      # xpra HTML5 client, what `chrome` serves on
+      - "14500:14500"
+
+volumes:
+  home:

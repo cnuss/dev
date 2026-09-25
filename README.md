@@ -2,6 +2,8 @@
 
 A containerized development environment with Kubernetes tools, networking utilities, and the Claude CLI. Multi-arch (`amd64`/`arm64`), built on Ubuntu.
 
+Runs as `ubuntu` (uid 1000) with passwordless `sudo`, zsh + [oh-my-zsh](https://ohmyz.sh) as the login shell. Pass `--user root` (or a pod `securityContext`) when something needs real uid 0.
+
 ## Quick Start
 
 ```bash
@@ -92,14 +94,14 @@ BGP speaking and route programming require `NET_ADMIN` + `NET_RAW` capabilities 
 Entering another container's namespaces needs `hostPID: true` plus `privileged: true` in the pod spec — or at minimum `CAP_SYS_ADMIN` and `CAP_SYS_PTRACE`:
 
 ```bash
-nsenter --target 1 --mount --uts --ipc --net --pid -- ip addr
+sudo nsenter --target 1 --mount --uts --ipc --net --pid -- ip addr
 ```
 
 `util-linux` is `Essential` in the Ubuntu base, but it's pinned in `.apt/packages` and smoke-tested so a slimmer `BASE_IMAGE` can't silently drop it.
 
 ### General
 
-`git`, `zsh`, `vim`, `less`, `busybox`, `tar`, `gzip`, `bzip2`, `xz`, `unzip`, `sudo`
+`git`, `zsh` + `oh-my-zsh`, `vim`, `less`, `busybox`, `tar`, `gzip`, `bzip2`, `xz`, `unzip`, `sudo`
 
 ### AI
 
@@ -109,12 +111,15 @@ nsenter --target 1 --mount --uts --ipc --net --pid -- ip addr
 
 ```bash
 docker build -t cnuss/dev .
+
+# or via compose: builds cnuss/dev:local on first run, mounts the repo at /workspace
+docker compose up -d && docker compose exec dev zsh
 ```
 
 The Dockerfile uses a multi-stage build:
 
 1. **homebrew** - Installs tools from `Brewfile` via Homebrew, copies binaries and shared libs
-2. **bins** - Installs system packages from `.apt/packages` (with extra apt repos from `.apt/sources/`)
+2. **bins** - Installs system packages from `.apt/packages` (with extra apt repos from `.apt/sources/`), oh-my-zsh for the `ubuntu` user
 3. **claude** - Downloads the Claude CLI release binary (version from `.claude/version`, sha256-verified against the release manifest) and writes its own SPDX entry
 4. **sbom** - Merges the per-stage SPDX documents into a single SBOM
 5. **combined** - Merges all stages; ships the SBOM at `/usr/local/share/sbom/sbom.spdx.json`
