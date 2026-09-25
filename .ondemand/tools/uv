@@ -1,0 +1,6 @@
+repo=astral-sh/uv
+bins="uv uvx"
+complete_uv="uv generate-shell-completion zsh"
+complete_uvx="uvx --generate-shell-completion zsh"
+url() { echo "https://github.com/$repo/releases/download/$tag/uv-$uname_m-unknown-linux-musl.tar.gz"; }
+checksums() { echo "$(url).sha256"; }

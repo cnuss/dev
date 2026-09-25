@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
 # On-demand tools (README.md, "On-demand tools").
 #
-# /usr/local/bin/<tool> is a symlink to this script until first use. Invoked
-# under a tool's name it installs that tool's package from the build-time
-# lock (download, sha256-verify, swap the real binary over the symlink) and
-# then execs it, so every later call hits the real binary directly.
+# Each on-demand executable is a symlink to this script until first use:
+# release tools at /usr/local/bin/<tool>, apt tools at their real path
+# (/usr/bin/xpra…). Invoked under a tool's name it installs that package
+# from the build-time lock, verifying every sha256, then execs the tool.
 #
 #   ondemand list                       # packages, versions, installed or not
 #   ondemand install <pkg|bin>...       # install now (alias: prefetch)
 #   ondemand install --all
-# shellcheck disable=SC2154  # bins/version/url/sha256 come from sourced .lock files
+# shellcheck disable=SC2154  # bins/version/url/sha256/debs… come from sourced .lock files
 set -euo pipefail
 
 SHARE=/usr/local/share/ondemand
 BIN=/usr/local/bin
+SELF="$BIN/ondemand"
 ZSH_FUNCS=/usr/local/share/zsh/site-functions
-# Artifacts staged here are used instead of downloading (build-time cache
-# for the smoke test and the :full image).
+# Artifacts staged here (or one directory down) are used instead of
+# downloading: the build-time cache for the smoke test and the :full image.
 CACHE="${ONDEMAND_CACHE:-/var/cache/ondemand}"
-# Where binaries go when /usr/local/bin can't be written (read-only root
-# filesystem, no sudo). The stub keeps working from here.
+# Where release binaries go when /usr/local/bin can't be written (read-only
+# root filesystem, no sudo). The stub keeps working from here.
 FALLBACK="${ONDEMAND_HOME:-${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/ondemand}/bin"
 # Last resort when $HOME isn't writable either.
 FALLBACK_TMP="/tmp/ondemand-$(id -u)/bin"
@@ -29,6 +30,10 @@ die() { echo "ondemand: $*" >&2; exit 1; }
 as_root() {
     if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n "$@"; fi
 }
+
+can_root() { [ "$(id -u)" -eq 0 ] || sudo -n true 2>/dev/null; }
+
+is_stub() { [ "$(readlink -f "$1" 2>/dev/null)" = "$SELF" ]; }
 
 # Package that provides a binary, via $SHARE/bins/<bin> -> ../<pkg>.lock
 pkg_of() {
@@ -40,7 +45,9 @@ pkg_of() {
     echo "${target%.lock}"
 }
 
-# Where a bin's real executable lives, if installed.
+kind_of() { grep -q '^kind=apt$' "$SHARE/$1.lock" && echo apt || echo release; }
+
+# Where a release bin's real executable lives, if installed.
 installed_path() {
     if [ -e "$BIN/$1" ] && [ ! -L "$BIN/$1" ]; then
         echo "$BIN/$1"
@@ -53,14 +60,26 @@ installed_path() {
     fi
 }
 
-# Fetch a URL into $2, preferring the build cache, then check its sha256.
+# apt kind: every top-level package installed (reads $packages from the lock).
+apt_installed() {
+    local p
+    for p in $packages; do
+        [ "$(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null)" = installed ] || return 1
+    done
+}
+
+# Fetch a URL into $2, preferring the build cache, then an optional
+# fallback URL; check its sha256 either way.
 fetch_verified() {
-    local url="$1" out="$2" sha="$3"
-    local cached="$CACHE/${url##*/}"
-    if [ -f "$cached" ]; then
+    local url="$1" out="$2" sha="$3" fallback="${4:-}"
+    local name="${url##*/}" cached
+    cached="$(find "$CACHE" -maxdepth 2 -type f -name "$name" -print -quit 2>/dev/null || true)"
+    if [ -n "$cached" ]; then
         cp "$cached" "$out"
-    else
-        curl -fsSL --retry 3 -o "$out" "$url" || die "download failed: $url"
+    elif ! curl -fsSL --retry 3 -o "$out" "$url" 2>/dev/null; then
+        if [ -z "$fallback" ] || ! curl -fsSL --retry 3 -o "$out" "$fallback"; then
+            die "download failed: $url${fallback:+ (and $fallback)}"
+        fi
     fi
     echo "$sha  $out" | sha256sum -c --quiet >/dev/null 2>&1 \
         || die "sha256 mismatch for $url (expected $sha)"
@@ -101,6 +120,97 @@ install_completion() {
     as_root install -m 0644 "$out" "$ZSH_FUNCS/_$bin" 2>/dev/null || true
 }
 
+# Release kind: one artifact, binaries swapped over their stubs.
+install_release() {
+    local bin all=1
+    for bin in $bins; do
+        installed_path "$bin" >/dev/null || all=0
+    done
+    [ "$all" -eq 0 ] || return 0
+
+    echo "ondemand: installing $pkg $version" >&2
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    artifact="$work/${url##*/}"
+    fetch_verified "$url" "$artifact" "$sha256"
+
+    mkdir "$work/x"
+    case "$artifact" in
+        *.tar.gz|*.tgz) tar -xzf "$artifact" -C "$work/x" ;;
+        *.tar.xz)       tar -xJf "$artifact" -C "$work/x" ;;
+        *.zip)          unzip -q "$artifact" -d "$work/x" ;;
+        *)              cp "$artifact" "$work/x/$bins" ;;
+    esac
+
+    for bin in $bins; do
+        src="$(find "$work/x" -type f -name "$bin" | head -n1)"
+        [ -n "$src" ] || die "$bin not found in ${url##*/}"
+        place "$src" "$bin" 0755
+    done
+    for bin in $bins; do
+        install_completion "$bin" "$work"
+    done
+}
+
+# Stop the other in-flight downloads quietly, then fail.
+abort_downloads() {
+    [ "$#" -eq 0 ] || { kill "$@" 2>/dev/null || true; wait "$@" 2>/dev/null || true; }
+    die "$pkg: a download failed (see above), nothing was installed"
+}
+
+# Apt kind: the exact .debs recorded at build time. Any already installed at
+# the same or a newer version are skipped (never downgrade), the rest are
+# verified and handed to apt as local files — apt orders them, nothing is
+# fetched from a mirror by apt itself.
+install_apt() {
+    ! apt_installed || return 0
+    can_root || die "$pkg is an apt package and needs root or passwordless sudo — or use cnuss/dev:full"
+
+    echo "ondemand: installing $pkg $version (apt)" >&2
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    chmod 0755 "$work"
+    local d name ver darch sha deb_url query cur fallback n=0 pids=()
+    for d in "${debs[@]}"; do
+        IFS='|' read -r name ver darch sha deb_url <<< "$d"
+        query="$name"; [ "$darch" = all ] || query="$name:$darch"
+        cur="$(dpkg-query -W -f='${db:Status-Status} ${Version}' "$query" 2>/dev/null || true)"
+        if [[ "$cur" == "installed "* ]] && dpkg --compare-versions "${cur#installed }" ge "$ver"; then
+            continue
+        fi
+        # Ubuntu mirrors drop superseded versions; Launchpad keeps every
+        # published .deb at a permanent URL.
+        fallback=""
+        case "$deb_url" in
+            http://*.ubuntu.com/*|https://*.ubuntu.com/*)
+                fallback="https://launchpad.net/ubuntu/+archive/primary/+files/${deb_url##*/}" ;;
+        esac
+        # Up to 8 downloads at a time; each verifies its own sha256.
+        ( fetch_verified "$deb_url" "$work/${deb_url##*/}" "$sha" "$fallback" \
+            && chmod 0644 "$work/${deb_url##*/}" ) &
+        pids+=("$!")
+        if [ "${#pids[@]}" -ge 8 ]; then
+            wait "${pids[0]}" || abort_downloads "${pids[@]:1}"
+            pids=("${pids[@]:1}")
+        fi
+        n=$((n + 1))
+    done
+    while [ "${#pids[@]}" -gt 0 ]; do
+        wait "${pids[0]}" || abort_downloads "${pids[@]:1}"
+        pids=("${pids[@]:1}")
+    done
+    if [ "$n" -gt 0 ]; then
+        # No package lists ship in the image, so apt resolves against the
+        # local files and what's installed; it has nothing to download from.
+        as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            --no-install-recommends \
+            -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+            "$work"/*.deb > "$work/apt.log" 2>&1 \
+            || { cat "$work/apt.log" >&2; die "$pkg: apt-get install failed (log above)"; }
+    fi
+    apt_installed || die "$pkg: packages still not installed after apt-get ($packages)"
+}
+
 install_pkg() {
     local pkg="$1" lock="$SHARE/$1.lock"
     [ -f "$lock" ] || die "unknown package: $pkg"
@@ -112,36 +222,10 @@ install_pkg() {
     flock 9
 
     (
+        kind=release
         # shellcheck source=/dev/null
         . "$lock"
-        local bin all=1
-        for bin in $bins; do
-            installed_path "$bin" >/dev/null || all=0
-        done
-        [ "$all" -eq 0 ] || exit 0
-
-        echo "ondemand: installing $pkg $version" >&2
-        work="$(mktemp -d)"
-        trap 'rm -rf "$work"' EXIT
-        artifact="$work/${url##*/}"
-        fetch_verified "$url" "$artifact" "$sha256"
-
-        mkdir "$work/x"
-        case "$artifact" in
-            *.tar.gz|*.tgz) tar -xzf "$artifact" -C "$work/x" ;;
-            *.tar.xz)       tar -xJf "$artifact" -C "$work/x" ;;
-            *.zip)          unzip -q "$artifact" -d "$work/x" ;;
-            *)              cp "$artifact" "$work/x/$bins" ;;
-        esac
-
-        for bin in $bins; do
-            src="$(find "$work/x" -type f -name "$bin" | head -n1)"
-            [ -n "$src" ] || die "$bin not found in ${url##*/}"
-            place "$src" "$bin" 0755
-        done
-        for bin in $bins; do
-            install_completion "$bin" "$work"
-        done
+        if [ "$kind" = apt ]; then install_apt; else install_release; fi
     )
     exec 9>&-
 }
@@ -159,13 +243,18 @@ cmd_list() {
     local pkg
     for pkg in $(all_pkgs); do
         (
+            kind=release
             # shellcheck source=/dev/null
             . "$SHARE/$pkg.lock"
             state=installed
-            for bin in $bins; do
-                installed_path "$bin" >/dev/null || state=on-demand
-            done
-            printf '%-12s %-12s %-10s %s\n' "$pkg" "$version" "$state" "$bins"
+            if [ "$kind" = apt ]; then
+                apt_installed || state=on-demand
+            else
+                for bin in $bins; do
+                    installed_path "$bin" >/dev/null || state=on-demand
+                done
+            fi
+            printf '%-12s %-18s %-8s %-10s %s\n' "$pkg" "$version" "$kind" "$state" "$bins"
         )
     done
 }
@@ -191,7 +280,9 @@ cmd_install() {
     done
 }
 
-self="${0##*/}"
+stub="$0"
+[[ "$stub" == */* ]] || stub="$(command -v -- "$stub" || echo "$stub")"
+self="${stub##*/}"
 if [ "$self" = ondemand ]; then
     case "${1:-}" in
         list) cmd_list ;;
@@ -207,5 +298,10 @@ if path="$(installed_path "$self")"; then
 fi
 pkg="$(pkg_of "$self")" || die "no on-demand package provides $self"
 install_pkg "$pkg"
+if [ "$(kind_of "$pkg")" = apt ]; then
+    # dpkg replaced the stub at this very path with the real file.
+    ! is_stub "$stub" || die "$stub is still a stub after installing $pkg"
+    exec "$stub" "$@"
+fi
 path="$(installed_path "$self")" || die "$self still missing after installing $pkg"
 exec "$path" "$@"

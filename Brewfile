@@ -1,7 +1,0 @@
-brew "fzf"
-brew "jose"
-brew "jq"
-brew "jwt-cli"
-brew "kubernetes-cli"
-brew "ripgrep"
-brew "uv"

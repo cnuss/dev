@@ -5,34 +5,6 @@
 ARG BASE_IMAGE=ubuntu:24.04
 FROM anchore/syft:latest AS syft
 
-FROM ${BASE_IMAGE} AS homebrew
-RUN apt-get update && apt-get install -y \
-    curl \
-    ca-certificates \
-    git \
-    build-essential \
-    sudo \
-    && rm -rf /var/lib/apt/lists/* && \
-    echo "ubuntu ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-
-USER ubuntu
-WORKDIR /home/ubuntu
-COPY .homebrew .homebrew
-RUN .homebrew/install.sh
-
-COPY Brewfile .
-
-RUN /home/linuxbrew/.linuxbrew/bin/brew bundle --file="./Brewfile" && \
-    for bin in /home/linuxbrew/.linuxbrew/bin/*; do [ "$(basename "$bin")" = "brew" ] && continue; sudo cp "$(readlink -f "$bin")" /usr/local/bin/"$(basename "$bin")"; done && \
-    ldd /usr/local/bin/* 2>/dev/null | grep -o '/home/linuxbrew[^ ]*\.so[^ ]*' | sort -u | while read lib; do sudo cp "$(readlink -f "$lib")" /usr/local/lib/"$(basename "$lib")"; done && \
-    sudo ldconfig
-RUN sudo mkdir -p /usr/local/share/zsh/site-functions && \
-    sudo cp -rL /home/linuxbrew/.linuxbrew/share/zsh/site-functions/* /usr/local/share/zsh/site-functions/ && \
-    sudo rm -f /usr/local/share/zsh/site-functions/_brew
-
-COPY --from=syft /syft /tmp/syft
-RUN /tmp/syft scan /home/linuxbrew/.linuxbrew --source-name homebrew --source-version latest --override-default-catalogers homebrew-cataloger -o spdx-json=brew.spdx.json && sudo rm /tmp/syft
-
 FROM ${BASE_IMAGE} AS bins
 COPY --from=syft /syft /tmp/syft
 
@@ -54,6 +26,14 @@ FROM ${BASE_IMAGE} AS ondemand
 RUN apt-get update && apt-get install -y curl ca-certificates jq && rm -rf /var/lib/apt/lists/*
 COPY .ondemand .ondemand
 RUN .ondemand/lock.sh /out
+
+# Apt-kind on-demand packages: resolved FROM bins, so each package's .deb
+# closure is exactly what it would add to the shipped image. The release
+# locks are merged in here so one SBOM covers both kinds.
+FROM bins AS ondemand-apt
+COPY .ondemand .ondemand
+COPY --from=ondemand /out/share/ /out/share/
+RUN .ondemand/lock-apt.sh /out
 RUN .ondemand/sbom.sh /out/share > ondemand.spdx.json
 
 FROM python:3.11-slim AS sbom
@@ -63,8 +43,7 @@ ARG SBOM_EMAIL=local@localhost
 ARG SBOM_NAMESPACE=https://local
 COPY --from=bins apt.spdx.json /sboms/
 COPY --from=claude claude.spdx.json /sboms/
-COPY --from=ondemand ondemand.spdx.json /sboms/
-COPY --from=homebrew /home/ubuntu/brew.spdx.json /sboms/
+COPY --from=ondemand-apt ondemand.spdx.json /sboms/
 RUN mkdir /out && pip install --no-cache-dir spdxmerge && \
     spdxmerge --docpath /sboms/ --outpath /out/ --mergetype 1 --name "$SBOM_NAME" --filetype J \
       --author "$SBOM_AUTHOR" --email "$SBOM_EMAIL" --docnamespace "$SBOM_NAMESPACE"
@@ -72,13 +51,11 @@ RUN mkdir /out && pip install --no-cache-dir spdxmerge && \
 FROM ${BASE_IMAGE} AS combined
 COPY --from=bins / /
 COPY --from=claude /usr/local/bin/claude /usr/local/bin/claude
-COPY --from=homebrew /usr/local/bin/ /usr/local/bin/
-COPY --from=homebrew /usr/local/lib/ /usr/local/lib/
-COPY --from=homebrew /usr/local/share/ /usr/local/share/
-COPY --from=homebrew /home/linuxbrew/.linuxbrew/lib/ld.so /home/linuxbrew/.linuxbrew/lib/ld.so
-COPY --from=ondemand /out/share/ /usr/local/share/ondemand/
+COPY --from=ondemand-apt /out/share/ /usr/local/share/ondemand/
 COPY --from=ondemand /out/bin/ /usr/local/bin/
 COPY .ondemand/ondemand /usr/local/bin/ondemand
+RUN mkdir -p /usr/local/share/zsh/site-functions
+RUN --mount=type=bind,source=.ondemand/stubs.sh,target=/tmp/stubs.sh /tmp/stubs.sh
 COPY --from=sbom /out/merged-SBoM-deep.json /usr/local/share/sbom/sbom.spdx.json
 
 RUN rm -rf /tmp/* && ldconfig
@@ -93,11 +70,11 @@ COPY --from=combined / /
 COPY . .
 RUN .apt/smoke.sh
 RUN .claude/smoke.sh
-RUN .homebrew/smoke.sh
 RUN .ondemand/smoke.sh
 # First run of each tool goes through its stub, installing from the build
-# cache — the whole download/verify/swap/exec path, no second download.
-RUN --mount=type=bind,from=ondemand,source=/out/cache,target=/var/cache/ondemand \
+# caches — the whole download/verify/install/exec path, no second download.
+RUN --mount=type=bind,from=ondemand,source=/out/cache,target=/var/cache/ondemand/release \
+    --mount=type=bind,from=ondemand-apt,source=/out/cache,target=/var/cache/ondemand/apt \
     .ondemand/smoke-tools.sh
 RUN .bin/smoke.sh
 
@@ -109,7 +86,8 @@ ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     LD_LIBRARY_PATH="/usr/local/lib" \
     PIPX_DEFAULT_PYTHON=/usr/bin/python3
 COPY --from=combined / /
-RUN --mount=type=bind,from=ondemand,source=/out/cache,target=/var/cache/ondemand \
+RUN --mount=type=bind,from=ondemand,source=/out/cache,target=/var/cache/ondemand/release \
+    --mount=type=bind,from=ondemand-apt,source=/out/cache,target=/var/cache/ondemand/apt \
     ondemand install --all
 CMD ["dev"]
 

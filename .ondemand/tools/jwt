@@ -1,0 +1,8 @@
+# jwt-cli only publishes an x86_64 Linux build; on arm64 use
+# `step crypto jwt` (step is on-demand too).
+repo=mike-engel/jwt-cli
+arches="amd64"
+bins="jwt"
+complete_jwt="jwt completion zsh"
+url() { echo "https://github.com/$repo/releases/download/$tag/jwt-linux-musl.tar.gz"; }
+checksums() { echo "https://github.com/$repo/releases/download/$tag/jwt-linux-musl.sha256"; }

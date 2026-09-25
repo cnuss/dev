@@ -156,9 +156,6 @@ jobs:
       - name: Apt smoke test
         run: .apt/smoke.sh
 
-      - name: Homebrew smoke test
-        run: .homebrew/smoke.sh
-
       - name: Claude smoke test
         run: .claude/smoke.sh
 
@@ -184,9 +181,6 @@ jobs:
       - name: Apt smoke test
         run: .apt/smoke.sh
 
-      - name: Homebrew smoke test
-        run: .homebrew/smoke.sh
-
       - name: Claude smoke test
         run: .claude/smoke.sh
 
@@ -211,9 +205,6 @@ jobs:
 
       - name: Apt smoke test
         run: .apt/smoke.sh
-
-      - name: Homebrew smoke test
-        run: .homebrew/smoke.sh
 
       - name: Claude smoke test
         run: .claude/smoke.sh
@@ -243,9 +234,6 @@ jobs:
 
       - name: Apt smoke test
         run: .apt/smoke.sh
-
-      - name: Homebrew smoke test
-        run: .homebrew/smoke.sh
 
       - name: Claude smoke test
         run: .claude/smoke.sh
@@ -448,9 +436,6 @@ jobs:
 
       - name: Apt smoke test
         run: .apt/smoke.sh
-
-      - name: Homebrew smoke test
-        run: .homebrew/smoke.sh
 
       - name: Claude smoke test
         run: .claude/smoke.sh

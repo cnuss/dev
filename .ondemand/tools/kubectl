@@ -1,0 +1,6 @@
+# Kubernetes publishes releases on dl.k8s.io, with a bare-hash .sha256 file.
+bins="kubectl"
+complete_kubectl="kubectl completion zsh"
+latest() { curl -fsSL https://dl.k8s.io/release/stable.txt; }
+url() { echo "https://dl.k8s.io/release/$tag/bin/linux/$arch/kubectl"; }
+checksums() { echo "$(url).sha256"; }
