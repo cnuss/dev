@@ -3,8 +3,6 @@ bzip2
 ca-certificates
 curl
 dnsutils
-frr
-frr-pythontools
 git
 gzip
 hostname

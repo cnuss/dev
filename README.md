@@ -77,7 +77,7 @@ kubectl create token default \
 | `cloudflared` † | Cloudflare Tunnel client — reach a cluster-internal service from outside, or reach out through egress-restricted networks |
 | `tailscale` / `tailscaled` † | Tailscale CLI and daemon — join the pod to a tailnet, or use it as a subnet router / exit node |
 
-As with FRR, these ship as binaries only — no baked credentials, no daemon started. Both are runtime concerns:
+These ship as binaries only — no baked credentials, no daemon started. Both are runtime concerns:
 
 - `tailscaled` needs `/dev/net/tun` plus `NET_ADMIN`, or `--tun=userspace-networking` to run without them. Auth via `TS_AUTHKEY` / `tailscale up --authkey`.
 - `cloudflared` needs no special capabilities; supply the tunnel token or credentials file at pod start.
@@ -86,10 +86,7 @@ As with FRR, these ship as binaries only — no baked credentials, no daemon sta
 
 | Tool | Description |
 |------|-------------|
-| FRR (`vtysh`, `bgpd`, `zebra`) | BGP speaker / routing suite (binaries only — no baked config, no running daemon; render `frr.conf` at pod start) |
 | `bgpq4` † | Generate prefix-lists from IRR data, diff against reality |
-
-BGP speaking and route programming require `NET_ADMIN` + `NET_RAW` capabilities in the pod `securityContext` — a runtime concern, not baked into the image.
 
 ### Namespaces / Process Debugging
 

@@ -1,3 +1,0 @@
-gpg=https://deb.frrouting.org/frr/keys.asc
-uri=https://deb.frrouting.org/frr
-components=frr-stable
