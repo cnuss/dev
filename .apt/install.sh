@@ -20,7 +20,9 @@ for src in "$SCRIPT_DIR"/sources/*; do
 done
 
 apt-get update
-xargs apt-get install -y < "$SCRIPT_DIR/packages"
+# No Recommends: they silently pulled in docker buildx/compose, desktop
+# backgrounds for xpra-html5 and the like. List what's wanted explicitly.
+xargs apt-get install -y --no-install-recommends < "$SCRIPT_DIR/packages"
 apt-get autoremove -y
 apt-get clean -y
 rm -rf /var/lib/apt/lists/*

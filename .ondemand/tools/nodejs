@@ -1,0 +1,3 @@
+# Node.js 24 LTS from NodeSource (.apt/sources/nodesource); npm/npx bundled.
+kind=apt
+packages="nodejs"

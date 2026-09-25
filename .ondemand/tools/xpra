@@ -1,0 +1,7 @@
+# xpra + Xvfb for browser-in-a-container setups; ~1GB of X/GL libraries,
+# none of which a debug shell needs until you start a display.
+kind=apt
+packages="xpra xpra-x11 xpra-html5 xvfb"
+# The xpra meta package ships no executable itself; /usr/bin/xpra comes
+# from a dependency.
+stubs="/usr/bin/xpra"

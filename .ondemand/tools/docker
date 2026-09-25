@@ -1,0 +1,4 @@
+# Docker CLI only (.apt/sources/docker). buildx/compose were Recommends;
+# add docker-buildx-plugin / docker-compose-plugin here if you want them.
+kind=apt
+packages="docker-ce-cli"

@@ -52,9 +52,15 @@ check_upstream() {
 for manifest in "$SCRIPT_DIR"/tools/*; do
     pkg="${manifest##*/}"
     (
-        tag=""
+        tag="" kind=""
         # shellcheck source=/dev/null
         . "$manifest"
+        [ "$kind" != apt ] || exit 0   # lock-apt.sh handles these
+        # Only published for some arches (arches="amd64" etc.): no stub here.
+        if [ -n "${arches:-}" ] && [[ " $arches " != *" $arch "* ]]; then
+            echo "$pkg: not available on $arch, skipped" >&2
+            exit 0
+        fi
         if [ -z "$tag" ]; then
             if declare -F latest >/dev/null; then
                 tag="$(latest)"
