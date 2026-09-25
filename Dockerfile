@@ -74,7 +74,8 @@ RUN rm -rf /tmp/* && ldconfig
 FROM scratch AS smoke-test
 # single layer output simulation
 ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-    LD_LIBRARY_PATH="/usr/local/lib"
+    LD_LIBRARY_PATH="/usr/local/lib" \
+    PIPX_DEFAULT_PYTHON=/usr/bin/python3
 COPY --from=combined / /
 
 COPY . .
@@ -86,7 +87,8 @@ RUN .bin/smoke.sh
 FROM scratch AS final
 # single layer output
 ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-    LD_LIBRARY_PATH="/usr/local/lib"
+    LD_LIBRARY_PATH="/usr/local/lib" \
+    PIPX_DEFAULT_PYTHON=/usr/bin/python3
 COPY --from=combined / /
 # `dev` opens zsh when stdin is a tty (kubectl debug -it, docker run -it) and
 # idles otherwise, so a headless pod stays up for exec.

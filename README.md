@@ -97,6 +97,14 @@ nsenter --target 1 --mount --uts --ipc --net --pid -- ip addr
 
 `util-linux` is `Essential` in the Ubuntu base, but it's pinned in `.apt/packages` and smoke-tested so a slimmer `BASE_IMAGE` can't silently drop it.
 
+### Languages / Runners
+
+| Tool | Description |
+|------|-------------|
+| `node` / `npm` / `npx` | Node.js 24 LTS (NodeSource) — `npx` runs packages without installing them |
+| `uv` / `uvx` | Fast Python package manager — `uvx` runs Python tools in throwaway envs |
+| `pipx` | Install / run Python CLI apps in isolated venvs |
+
 ### General
 
 `git`, `zsh`, `vim`, `less`, `busybox`, `tar`, `gzip`, `bzip2`, `xz`, `unzip`, `sudo`

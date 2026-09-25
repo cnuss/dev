@@ -13,4 +13,6 @@ kubectx --version
 rg --version
 step version
 tailscale version
+uv --version
+uvx --version
 yq --version

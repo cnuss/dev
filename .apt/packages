@@ -18,7 +18,9 @@ ncat
 net-tools
 netcat-openbsd
 nmap
+nodejs
 openssh-client
+pipx
 socat
 sudo
 tar
