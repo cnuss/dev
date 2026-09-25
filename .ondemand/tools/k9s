@@ -1,0 +1,5 @@
+repo=derailed/k9s
+bins="k9s"
+complete_k9s="k9s completion zsh"
+url() { echo "https://github.com/$repo/releases/download/$tag/k9s_Linux_$arch.tar.gz"; }
+checksums() { echo "https://github.com/$repo/releases/download/$tag/checksums.sha256"; }

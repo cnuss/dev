@@ -1,0 +1,5 @@
+repo=smallstep/cli
+bins="step"
+complete_step="step completion zsh"
+url() { echo "https://github.com/$repo/releases/download/$tag/step_linux_${version}_$arch.tar.gz"; }
+checksums() { echo "https://github.com/$repo/releases/download/$tag/checksums.txt"; }

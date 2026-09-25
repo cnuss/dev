@@ -1,0 +1,4 @@
+# No upstream checksum file; the build-time hash is the pin.
+repo=cloudflare/cloudflared
+bins="cloudflared"
+url() { echo "https://github.com/$repo/releases/download/$tag/cloudflared-linux-$arch"; }

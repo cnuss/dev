@@ -44,6 +44,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          target: final
           platforms: linux/amd64
           pull: true
           push: ${{ github.ref == 'refs/heads/latest' }}
@@ -53,6 +54,27 @@ jobs:
           tags: ghcr.io/${{ github.repository }}:amd-sha-${{ github.sha }}
           cache-from: type=gha,scope=amd
           cache-to: type=gha,mode=max,scope=amd
+          build-args: |
+            SBOM_NAME=${{ github.repository }}
+            SBOM_AUTHOR=${{ github.actor }}
+            SBOM_EMAIL=${{ github.actor }}@users.noreply.github.com
+            SBOM_NAMESPACE=https://github.com/${{ github.repository }}
+
+      # Same build graph plus every on-demand tool preinstalled (see
+      # .ondemand/). Shares the stages above, so it's mostly cache hits.
+      - name: Build full image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: full
+          platforms: linux/amd64
+          push: ${{ github.ref == 'refs/heads/latest' }}
+          no-cache: ${{ github.event_name == 'schedule' }}
+          tags: ghcr.io/${{ github.repository }}:amd-full-sha-${{ github.sha }}
+          cache-from: |
+            type=gha,scope=amd
+            type=gha,scope=amd-full
+          cache-to: type=gha,mode=max,scope=amd-full
           build-args: |
             SBOM_NAME=${{ github.repository }}
             SBOM_AUTHOR=${{ github.actor }}
@@ -79,6 +101,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          target: final
           platforms: linux/arm64
           pull: true
           push: ${{ github.ref == 'refs/heads/latest' }}
@@ -88,6 +111,27 @@ jobs:
           tags: ghcr.io/${{ github.repository }}:arm-sha-${{ github.sha }}
           cache-from: type=gha,scope=arm
           cache-to: type=gha,mode=max,scope=arm
+          build-args: |
+            SBOM_NAME=${{ github.repository }}
+            SBOM_AUTHOR=${{ github.actor }}
+            SBOM_EMAIL=${{ github.actor }}@users.noreply.github.com
+            SBOM_NAMESPACE=https://github.com/${{ github.repository }}
+
+      # Same build graph plus every on-demand tool preinstalled (see
+      # .ondemand/). Shares the stages above, so it's mostly cache hits.
+      - name: Build full image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: full
+          platforms: linux/arm64
+          push: ${{ github.ref == 'refs/heads/latest' }}
+          no-cache: ${{ github.event_name == 'schedule' }}
+          tags: ghcr.io/${{ github.repository }}:arm-full-sha-${{ github.sha }}
+          cache-from: |
+            type=gha,scope=arm
+            type=gha,scope=arm-full
+          cache-to: type=gha,mode=max,scope=arm-full
           build-args: |
             SBOM_NAME=${{ github.repository }}
             SBOM_AUTHOR=${{ github.actor }}
@@ -118,6 +162,9 @@ jobs:
       - name: Claude smoke test
         run: .claude/smoke.sh
 
+      - name: On-demand smoke test
+        run: .ondemand/smoke.sh
+
       - name: Image helper smoke test
         run: .bin/smoke.sh
 
@@ -143,11 +190,78 @@ jobs:
       - name: Claude smoke test
         run: .claude/smoke.sh
 
+      - name: On-demand smoke test
+        run: .ondemand/smoke.sh
+
+      - name: Image helper smoke test
+        run: .bin/smoke.sh
+
+  smoke-full-amd:
+    needs: build-amd
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: ghcr.io/${{ github.repository }}:amd-full-sha-${{ github.sha }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout smoke scripts
+        uses: actions/checkout@v6
+
+      - name: Apt smoke test
+        run: .apt/smoke.sh
+
+      - name: Homebrew smoke test
+        run: .homebrew/smoke.sh
+
+      - name: Claude smoke test
+        run: .claude/smoke.sh
+
+      - name: On-demand smoke test
+        run: .ondemand/smoke.sh
+
+      # Preinstalled in :full, so this must pass without any download.
+      - name: On-demand tools smoke test
+        run: .ondemand/smoke-tools.sh
+
+      - name: Image helper smoke test
+        run: .bin/smoke.sh
+
+  smoke-full-arm:
+    needs: build-arm
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    container:
+      image: ghcr.io/${{ github.repository }}:arm-full-sha-${{ github.sha }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout smoke scripts
+        uses: actions/checkout@v6
+
+      - name: Apt smoke test
+        run: .apt/smoke.sh
+
+      - name: Homebrew smoke test
+        run: .homebrew/smoke.sh
+
+      - name: Claude smoke test
+        run: .claude/smoke.sh
+
+      - name: On-demand smoke test
+        run: .ondemand/smoke.sh
+
+      # Preinstalled in :full, so this must pass without any download.
+      - name: On-demand tools smoke test
+        run: .ondemand/smoke-tools.sh
+
       - name: Image helper smoke test
         run: .bin/smoke.sh
 
   push:
-    needs: [smoke-amd, smoke-arm]
+    needs: [smoke-amd, smoke-arm, smoke-full-amd, smoke-full-arm]
     if: github.ref == 'refs/heads/latest'
     runs-on: ubuntu-latest
     steps:
@@ -274,6 +388,54 @@ jobs:
           predicate-path: /home/runner/sbom/sbom.spdx.json
           push-to-registry: true
 
+      - name: Create and push full multi-arch manifest
+        run: |
+          docker buildx imagetools create \
+            --tag ghcr.io/${{ github.repository }}:full \
+            --tag ghcr.io/${{ github.repository }}:full-sha-${{ github.sha }} \
+            --tag index.docker.io/${{ github.repository }}:full \
+            --tag index.docker.io/${{ github.repository }}:full-sha-${{ github.sha }} \
+            ghcr.io/${{ github.repository }}:amd-full-sha-${{ github.sha }} \
+            ghcr.io/${{ github.repository }}:arm-full-sha-${{ github.sha }}
+
+      - name: Get full manifest digest
+        id: digest-full
+        run: echo "digest=$(docker buildx imagetools inspect --raw ghcr.io/${{ github.repository }}:full | sha256sum | awk '{print "sha256:" $1}')" >> $GITHUB_OUTPUT
+
+      - name: Attest full build provenance (GHCR)
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.digest-full.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest full build provenance (DockerHub)
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: index.docker.io/${{ github.repository }}
+          subject-digest: ${{ steps.digest-full.outputs.digest }}
+          push-to-registry: true
+
+      # :full ships the same SBOM file as :latest — the on-demand packages are
+      # already listed there — so attest that one.
+      - name: Attest full SBOM (GHCR)
+        uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.digest-full.outputs.digest }}
+          predicate-type: https://spdx.dev/Document
+          predicate-path: /home/runner/sbom/sbom.spdx.json
+          push-to-registry: true
+
+      - name: Attest full SBOM (DockerHub)
+        uses: actions/attest@v4
+        with:
+          subject-name: index.docker.io/${{ github.repository }}
+          subject-digest: ${{ steps.digest-full.outputs.digest }}
+          predicate-type: https://spdx.dev/Document
+          predicate-path: /home/runner/sbom/sbom.spdx.json
+          push-to-registry: true
+
   verify:
     needs: push
     runs-on: ubuntu-latest
@@ -293,5 +455,24 @@ jobs:
       - name: Claude smoke test
         run: .claude/smoke.sh
 
+      - name: On-demand smoke test
+        run: .ondemand/smoke.sh
+
       - name: Image helper smoke test
         run: .bin/smoke.sh
+
+  verify-full:
+    needs: push
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: ${{ github.repository }}:full
+    steps:
+      - name: Checkout smoke scripts
+        uses: actions/checkout@v6
+
+      - name: On-demand smoke test
+        run: .ondemand/smoke.sh
+
+      - name: On-demand tools smoke test
+        run: .ondemand/smoke-tools.sh

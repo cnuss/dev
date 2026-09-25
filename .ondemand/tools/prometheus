@@ -1,0 +1,4 @@
+repo=prometheus/prometheus
+bins="prometheus promtool"
+url() { echo "https://github.com/$repo/releases/download/$tag/prometheus-$version.linux-$arch.tar.gz"; }
+checksums() { echo "https://github.com/$repo/releases/download/$tag/sha256sums.txt"; }
