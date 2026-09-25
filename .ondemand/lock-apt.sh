@@ -73,7 +73,9 @@ for manifest in "$SCRIPT_DIR"/tools/*; do
         for path in $stubs; do
             found=""
             for deb in "${deb_of[@]}"; do
-                if dpkg-deb -c "$deb" | awk '{ print $6 }' | sed 's|^\./|/|' | grep -qxF "$path"; then
+                # Not grep -q: exiting early SIGPIPEs dpkg-deb, and pipefail
+                # would turn a match into a miss.
+                if dpkg-deb -c "$deb" | awk '{ print $6 }' | sed 's|^\./|/|' | grep -xF "$path" >/dev/null; then
                     found=1; break
                 fi
             done
